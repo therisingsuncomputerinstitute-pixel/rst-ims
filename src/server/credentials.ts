@@ -330,6 +330,55 @@ const failSummary = (message: string): EmailSummaryResult => ({
 });
 
 /**
+ * Mint a fresh temporary password for one student and hand it back to the
+ * admin, for the manual-email workflow (no Resend needed). Forces a password
+ * change on their next sign-in and kills their existing sessions.
+ */
+export const resetStudentPassword = async (input: {
+  userId: string;
+  sharedPassword?: string;
+}) => {
+  try {
+    await requireAdmin();
+
+    const target = await db.query.user.findFirst({
+      where: eq(user.id, input.userId ?? ""),
+    });
+    if (!target) return fail("That account no longer exists.");
+    if (target.role !== "student") {
+      return fail("Only student accounts get temporary passwords.");
+    }
+
+    const shared = input.sharedPassword?.trim();
+    if (shared && shared.length < MIN_PASSWORD_LENGTH) {
+      return fail(
+        `The password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+      );
+    }
+    const password =
+      shared && shared.length > 0 ? shared : generateTemporaryPassword();
+
+    await setCredentialPassword(target.id, password);
+    await db
+      .update(user)
+      .set({ mustChangePassword: true })
+      .where(eq(user.id, target.id));
+    await revokeUserSessions(target.id);
+
+    return {
+      success: true as const,
+      message: `New password for ${target.name}. Copy it now — it is not stored anywhere in readable form.`,
+      email: target.email,
+      name: target.name,
+      password,
+    };
+  } catch (error) {
+    const e = error as Error;
+    return fail(e.message || "Failed to reset the password.");
+  }
+};
+
+/**
  * Create many student accounts from one pasted list.
  *
  * Existing students are left untouched (no password reset) and reported as

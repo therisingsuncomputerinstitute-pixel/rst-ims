@@ -6,6 +6,7 @@ import {
   ClipboardCopy,
   GraduationCap,
   Loader2,
+  KeyRound,
   Mail,
   Send,
   ShieldCheck,
@@ -44,6 +45,7 @@ import {
   emailCredentialsToUser,
   enrollStudents,
   getEmailDeliveryStatus,
+  resetStudentPassword,
 } from "@/server/credentials";
 import {
   createAccount,
@@ -129,7 +131,7 @@ export default function UsersPage() {
   }, [isAdmin, loadAccounts]);
 
   if (!isAdmin) {
-    return (
+  return (
       <div className="p-10 text-center text-muted-foreground font-bold uppercase tracking-widest text-sm">
         You do not have permission to view this page.
       </div>
@@ -289,6 +291,22 @@ export default function UsersPage() {
     } else {
       toast.error(result.message, { duration: 6000 });
     }
+  };
+
+  const handleResetPassword = async (userId: string, name: string) => {
+    setActing(userId);
+    const result = await resetStudentPassword({ userId });
+    if (result.success) {
+      setIssued([
+        { email: result.email, name: result.name, password: result.password },
+      ]);
+      toast.success(result.message, { duration: 8000 });
+      loadAccounts();
+      router.refresh();
+    } else {
+      toast.error(result.message, { duration: 6000 });
+    }
+    setActing(null);
   };
 
   const handleEmailOne = async (userId: string, displayEmail: string) => {
@@ -688,6 +706,24 @@ export default function UsersPage() {
                             <SelectItem value="admin">Admin</SelectItem>
                           </SelectContent>
                         </Select>
+                        {account.role === "student" && (
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title="Generate a new temporary password"
+                            className="h-9 w-9 rounded-xl"
+                            onClick={() =>
+                              handleResetPassword(account.id, account.name)
+                            }
+                            disabled={acting === account.id}
+                          >
+                            {acting === account.id ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <KeyRound className="size-4" />
+                            )}
+                          </Button>
+                        )}
                         {account.role === "student" && (
                           <Button
                             size="icon"
