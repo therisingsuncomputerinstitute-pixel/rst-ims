@@ -20,6 +20,7 @@ import {
 import { auth } from "@/lib/auth";
 import { getSupabaseServer } from "@/lib/supabase-server";
 import { letterForPercent } from "@/lib/grading";
+import { parseStudentList } from "@/lib/student-list";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Auth helpers
@@ -143,6 +144,11 @@ export type CourseWithStats = {
   studentCount: number;
 };
 
+/**
+ * Courses the signed-in user should see on `/courses`.
+ * Admins get every course in the org; students only get the ones they are
+ * enrolled in. Use `listCourseCatalog` for the read-only "all courses" view.
+ */
 export async function listCourses() {
   const u = await requireUser();
   const orgId = await getCurrentOrgId();
@@ -158,17 +164,11 @@ export async function listCourses() {
     },
   } as const;
 
-  const rows = isAdmin
-    ? await db.query.courses.findMany({
-        where: (c, { eq: e }) => e(c.organizationId, orgId),
-        ...base,
-        orderBy: (c, { asc: a }) => [a(c.name)],
-      })
-    : await db.query.courses.findMany({
-        where: (c, { eq: e }) => e(c.organizationId, orgId),
-        ...base,
-        orderBy: (c, { asc: a }) => [a(c.name)],
-      });
+  const rows = await db.query.courses.findMany({
+    where: (c, { eq: e }) => e(c.organizationId, orgId),
+    ...base,
+    orderBy: (c, { asc: a }) => [a(c.name)],
+  });
 
   const enrolledRows = isAdmin
     ? new Map<string, true>()
@@ -181,6 +181,52 @@ export async function listCourses() {
         ).map((r) => [r.courseId, true as const]),
       );
 
+  return rows
+    .filter((row) => isAdmin || enrolledRows.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      description: row.description,
+      instructorName: row.instructorName,
+      term: row.term,
+      createdAt: row.createdAt,
+      quizCount: row.quizzes.length,
+      assignmentCount: row.assignments.length,
+      studentCount: row.courseEnrollments.length,
+      isEnrolled: enrolledRows.has(row.id),
+    }));
+}
+
+/**
+ * Read-only listing of every course in the org, including ones the student is
+ * not enrolled in. There is deliberately no self-enroll path here: enrolling is
+ * an admin-only action.
+ */
+export async function listCourseCatalog() {
+  const u = await requireUser();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) return [];
+
+  const rows = await db.query.courses.findMany({
+    where: (c, { eq: e }) => e(c.organizationId, orgId),
+    with: {
+      quizzes: { columns: { id: true } },
+      assignments: { columns: { id: true } },
+      courseEnrollments: { columns: { id: true } },
+    },
+    orderBy: (c, { asc: a }) => [a(c.name)],
+  });
+
+  const enrolledRows = new Set(
+    (
+      await db
+        .select({ courseId: courseEnrollments.courseId })
+        .from(courseEnrollments)
+        .where(eq(courseEnrollments.studentId, u.id))
+    ).map((r) => r.courseId),
+  );
+
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -188,10 +234,8 @@ export async function listCourses() {
     description: row.description,
     instructorName: row.instructorName,
     term: row.term,
-    createdAt: row.createdAt,
     quizCount: row.quizzes.length,
     assignmentCount: row.assignments.length,
-    studentCount: row.courseEnrollments.length,
     isEnrolled: enrolledRows.has(row.id),
   }));
 }
@@ -326,9 +370,31 @@ export async function getCourse(courseId: string) {
   };
 }
 
-export async function deleteCourse(courseId: string) {
+/**
+ * Deleting a course cascades to its quizzes, assignments and every student
+ * submission, so the caller must echo back the course code. The UI asks the
+ * admin to type it; this check makes the confirmation unavoidable.
+ */
+export async function deleteCourse(
+  courseId: string,
+  confirmation?: string,
+) {
   const { orgId } = await requireAdminOrg();
   await assertCourseInOrg(courseId, orgId);
+
+  const [course] = await db
+    .select({ name: courses.name, code: courses.code })
+    .from(courses)
+    .where(and(eq(courses.id, courseId), eq(courses.organizationId, orgId)))
+    .limit(1);
+  if (!course) throw new Error("That course no longer exists.");
+
+  if ((confirmation ?? "").trim().toUpperCase() !== course.code.toUpperCase()) {
+    throw new Error(
+      `Type the course code ${course.code} to confirm deletion.`,
+    );
+  }
+
   await db
     .delete(courses)
     .where(and(eq(courses.id, courseId), eq(courses.organizationId, orgId)));
@@ -365,28 +431,182 @@ export async function listEnrolledStudents(courseId: string) {
     .where(eq(courseEnrollments.courseId, courseId));
 }
 
-export async function enrollStudents(courseId: string, studentIds: string[]) {
-  const { orgId } = await requireAdminOrg();
-  await assertCourseInOrg(courseId, orgId);
-  const ids = studentIds.filter(Boolean);
-  if (!ids.length) return { success: true };
+export type BulkEnrollResult = {
+  success: boolean;
+  message: string;
+  added: number;
+  alreadyEnrolled: number;
+  unknown: number;
+  total: number;
+};
+
+/** Guard rail so one paste/dialog can't try to insert a whole institute. */
+const MAX_BULK_ENROLLMENTS = 200;
+
+const addEnrollments = async (
+  courseId: string,
+  orgId: string,
+  studentIds: string[],
+) => {
+  // Dedupe within the batch and drop empties.
+  const requested = [...new Set(studentIds.map((id) => id?.trim()).filter(Boolean))];
+  if (!requested.length) {
+    return { added: 0, alreadyEnrolled: 0, unknown: 0, total: 0 };
+  }
+  if (requested.length > MAX_BULK_ENROLLMENTS) {
+    throw new Error(
+      `That is ${requested.length} students — the limit is ${MAX_BULK_ENROLLMENTS} at a time. Split the list.`,
+    );
+  }
+
+  // Only students that actually belong to this org can be enrolled.
+  const orgIds = new Set(await getOrgStudentIds(orgId));
+  const inOrg = requested.filter((id) => orgIds.has(id));
+  const notInOrg = requested.length - inOrg.length;
+
+  const knownStudents = inOrg.length
+    ? await db
+        .select({ id: user.id })
+        .from(user)
+        .where(and(eq(user.role, "student"), inArray(user.id, inOrg)))
+    : [];
+  const studentSet = new Set(knownStudents.map((s) => s.id));
+
+  const unknown =
+    notInOrg + inOrg.filter((id) => !studentSet.has(id)).length;
+  const targets = inOrg.filter((id) => studentSet.has(id));
+
+  if (!targets.length) {
+    return { added: 0, alreadyEnrolled: 0, unknown, total: requested.length };
+  }
+
   const existing = await db
     .select({ studentId: courseEnrollments.studentId })
     .from(courseEnrollments)
     .where(
       and(
         eq(courseEnrollments.courseId, courseId),
-        inArray(courseEnrollments.studentId, ids),
+        inArray(courseEnrollments.studentId, targets),
       ),
     );
   const existingSet = new Set(existing.map((e) => e.studentId));
-  const toAdd = ids.filter((id) => !existingSet.has(id));
+  const toAdd = targets.filter((id) => !existingSet.has(id));
+
   if (toAdd.length) {
-    await db.insert(courseEnrollments).values(
-      toAdd.map((studentId) => ({ courseId, studentId })),
-    );
+    // onConflictDoNothing makes this safe even if two admins click at once.
+    await db
+      .insert(courseEnrollments)
+      .values(toAdd.map((studentId) => ({ courseId, studentId })))
+      .onConflictDoNothing({
+        target: [courseEnrollments.courseId, courseEnrollments.studentId],
+      });
   }
-  return { success: true };
+
+  return {
+    added: toAdd.length,
+    alreadyEnrolled: targets.length - toAdd.length,
+    unknown,
+    total: requested.length,
+  };
+};
+
+export async function enrollStudents(courseId: string, studentIds: string[]) {
+  const { orgId } = await requireAdminOrg();
+  await assertCourseInOrg(courseId, orgId);
+  const result = await addEnrollments(courseId, orgId, studentIds ?? []);
+  return { success: true, ...result };
+}
+
+/**
+ * Enroll a whole class at once from a pasted list of emails or names.
+ * Anything that is not an org student is reported instead of inserted.
+ */
+export async function enrollStudentsByList(
+  courseId: string,
+  input: { list: string; enrollAll?: boolean },
+): Promise<BulkEnrollResult> {
+  const { orgId } = await requireAdminOrg();
+  await assertCourseInOrg(courseId, orgId);
+
+  try {
+    const students = await listStudents();
+    const known = new Map(students.map((s) => [s.email.toLowerCase(), s]));
+
+    let targets: { id: string; email: string }[] = [];
+
+    if (input.enrollAll) {
+      targets = students.map((s) => ({ id: s.id, email: s.email }));
+    } else {
+      const entries = parseStudentList(input.list ?? "");
+      if (!entries.length) {
+        return {
+          success: false,
+          message: "No valid email addresses found in the list.",
+          added: 0,
+          alreadyEnrolled: 0,
+          unknown: 0,
+          total: 0,
+        };
+      }
+      const missing: string[] = [];
+      for (const entry of entries) {
+        const match = known.get(entry.email);
+        if (match) {
+          targets.push({ id: match.id, email: match.email });
+        } else {
+          missing.push(entry.email);
+        }
+      }
+      if (missing.length) {
+        return {
+          success: false,
+          message: `${missing.length} address${
+            missing.length === 1 ? " is" : "es are"
+          } not a student account yet: ${missing.slice(0, 5).join(", ")}${
+            missing.length > 5 ? ` +${missing.length - 5} more` : ""
+          }. Create them on the Users page first.`,
+          added: 0,
+          alreadyEnrolled: 0,
+          unknown: missing.length,
+          total: entries.length,
+        };
+      }
+    }
+
+    const result = await addEnrollments(
+      courseId,
+      orgId,
+      targets.map((t) => t.id),
+    );
+
+    const parts: string[] = [];
+    if (result.added > 0) {
+      parts.push(`${result.added} enrolled`);
+    }
+    if (result.alreadyEnrolled > 0) {
+      parts.push(`${result.alreadyEnrolled} already enrolled`);
+    }
+    if (parts.length === 0) {
+      parts.push("Nothing to do");
+    }
+
+    return {
+      success:
+        result.unknown === 0 && (result.added > 0 || result.alreadyEnrolled > 0),
+      message: parts.join(" · "),
+      ...result,
+    };
+  } catch (error) {
+    const e = error as Error;
+    return {
+      success: false,
+      message: e.message || "Failed to enroll students.",
+      added: 0,
+      alreadyEnrolled: 0,
+      unknown: 0,
+      total: 0,
+    };
+  }
 }
 
 export async function removeEnrollment(courseId: string, studentId: string) {

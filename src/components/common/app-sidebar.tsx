@@ -22,16 +22,17 @@ import {
 } from "@/components/ui/sidebar";
 import { usePathname } from "next/navigation";
 import { type Icon as TablerIcon } from "@tabler/icons-react";
+import Image from "next/image";
 import Link from "next/link";
 import { authClient } from "@/lib/auth-client";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { INSTITUTE_NAME } from "@/lib/institute";
 
 import { NavUser } from "./nav-user";
 
 const navMain = [
   { title: "Dashboard", url: "/dashboard", icon: IconLayoutDashboard },
-  { title: "Courses", url: "/courses", icon: IconBooks },
+  { title: "Courses", url: "/courses", icon: IconBooks, studentsOnly: true },
+  { title: "Course Catalog", url: "/courses/catalog", icon: IconBooks, studentsOnly: true },
   { title: "Quizzes", url: "/quizzes", icon: IconClipboardText },
   { title: "Assignments", url: "/assignments", icon: IconFileText },
   { title: "Grades", url: "/grades", icon: IconReportAnalytics },
@@ -65,13 +66,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               className="hover:bg-transparent"
             >
               <Link href="/dashboard" className="flex items-center gap-3 group">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-secondary/60 text-primary-foreground transition-transform group-hover:scale-110">
-                  <Avatar className="size-8 rounded-lg">
-                    <AvatarImage src="/logo.png" alt="Logo" />
-                    <AvatarFallback className="rounded-lg text-xs font-black">
-                      {INSTITUTE_NAME.slice(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
+                <div className="flex size-9 shrink-0 items-center justify-center">
+                  <Image
+                    src="/logo.png"
+                    alt={`${INSTITUTE_NAME} logo`}
+                    width={36}
+                    height={36}
+                    priority
+                    className="size-9 object-contain transition-transform group-hover:scale-110"
+                  />
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-black uppercase tracking-tighter">
@@ -109,6 +112,7 @@ function NavMain({
     title: string;
     url: string;
     icon?: TablerIcon;
+    studentsOnly?: boolean;
   }[];
   isAdmin?: boolean;
 }) {
@@ -116,6 +120,11 @@ function NavMain({
 
   const filteredItems = items.filter((item) => {
     if (item.title === "Users" && !isAdmin) {
+      return false;
+    }
+    // "Courses" and "Course Catalog" are the same destination for admins, so a
+    // student-only duplicate would be noise in the admin menu.
+    if (item.studentsOnly && isAdmin) {
       return false;
     }
     return true;

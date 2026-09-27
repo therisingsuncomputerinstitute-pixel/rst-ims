@@ -47,12 +47,26 @@ export function LoginForm({
     },
   });
 
+  React.useEffect(() => {
+    const email = new URLSearchParams(window.location.search).get("email");
+    if (email) form.setValue("email", email);
+  }, [form]);
+
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsLoading(true);
 
-    const { success, message } = await signIn(values.email, values.password);
+    const { success, message, mustChangePassword } = await signIn(
+      values.email,
+      values.password,
+    );
 
     if (success) {
+      if (mustChangePassword) {
+        router.push(`/set-password?email=${encodeURIComponent(values.email)}`);
+        router.refresh();
+        setIsLoading(false);
+        return;
+      }
       toast.success(message as string);
       router.push("/dashboard");
     } else {
@@ -68,7 +82,9 @@ export function LoginForm({
         <CardHeader className="text-center">
           <CardTitle className="text-xl">Welcome back</CardTitle>
           <CardDescription>
-            Sign in with the credentials provided by your institute.
+            Sign in with the credentials provided by your institute. First time
+            here? Use the &ldquo;Set your password&rdquo; link in your welcome
+            email.
           </CardDescription>
         </CardHeader>
         <CardContent>

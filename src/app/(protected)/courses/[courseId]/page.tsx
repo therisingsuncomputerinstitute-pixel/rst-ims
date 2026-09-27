@@ -18,11 +18,16 @@ import {
   Mail,
   UserPlus,
   GraduationCap,
+  UsersRound,
+  TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -42,11 +47,13 @@ import {
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { parseStudentList } from "@/lib/student-list";
 import { authClient } from "@/lib/auth-client";
 import {
   getCourse,
   listStudents,
   enrollStudents,
+  enrollStudentsByList,
   removeEnrollment,
   toggleQuizPublish,
   toggleAssignmentPublish,
@@ -176,7 +183,12 @@ export default function CourseDetailPage() {
           load={load}
         />
       ) : (
-        <StudentsTab courseId={courseId} enrollments={enrollments} load={load} />
+        <StudentsTab
+          courseId={courseId}
+          courseName={course.name}
+          enrollments={enrollments}
+          load={load}
+        />
       )}
     </div>
   );
@@ -444,15 +456,21 @@ function ItemCard({
 
 function StudentsTab({
   courseId,
+  courseName,
   enrollments,
   load,
 }: {
   courseId: string;
+  courseName: string;
   enrollments: { id: string; name: string; email: string }[];
   load: () => void;
 }) {
   const [students, setStudents] = useState<{ id: string; name: string; email: string }[]>([]);
-  const [selected, setSelected] = useState<string>("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkList, setBulkList] = useState("");
+  const [showBulk, setShowBulk] = useState(false);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -460,13 +478,39 @@ function StudentsTab({
   }, []);
 
   const addEnrollment = async () => {
-    if (!selected) return;
+    if (selected.length === 0) return;
     setBusy(true);
     try {
-      await enrollStudents(courseId, [selected]);
-      toast.success("Student enrolled");
-      setSelected("");
+      const result = await enrollStudents(courseId, selected);
+      const added = (result as { added?: number }).added ?? selected.length;
+      toast.success(
+        `${added} student${added === 1 ? "" : "s"} enrolled in ${courseName}`,
+      );
+      setSelected([]);
+      setOpen(false);
       load();
+    } catch (e: any) {
+      toast.error(e.message || "Failed to enroll");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addBulk = async (enrollAll: boolean) => {
+    setBusy(true);
+    try {
+      const result = await enrollStudentsByList(courseId, {
+        list: bulkList,
+        enrollAll,
+      });
+      if (result.success) {
+        toast.success(`${result.message} in ${courseName}`, { duration: 6000 });
+        setBulkList("");
+        setShowBulk(false);
+        load();
+      } else {
+        toast.error(result.message, { duration: 8000 });
+      }
     } catch (e: any) {
       toast.error(e.message || "Failed to enroll");
     } finally {
@@ -490,56 +534,182 @@ function StudentsTab({
   const alreadyEnrolled = new Set(enrollments.map((e) => e.id));
   const available = students.filter((s) => !alreadyEnrolled.has(s.id));
 
+  const matches = query.trim().toLowerCase();
+  const filtered = matches
+    ? available.filter(
+        (s) =>
+          s.name.toLowerCase().includes(matches) ||
+          s.email.toLowerCase().includes(matches),
+      )
+    : available;
+
+  const toggle = (id: string) =>
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((s) => selected.includes(s.id));
+
   return (
     <Card className="rounded-3xl border-outline-variant/60">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle className="flex items-center gap-2">
           <Users className="size-5 text-primary" /> Enrolled Students
         </CardTitle>
-        <Dialog>
-          <DialogTrigger
-            render={
-              <Button
-                size="sm"
-                className="rounded-full"
-                disabled={available.length === 0}
-              />
-            }
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="rounded-full"
+            disabled={available.length === 0 || busy}
+            onClick={() => setShowBulk((v) => !v)}
           >
-            <UserPlus className="size-4 mr-1" /> Enroll Student
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Enroll a student</DialogTitle>
-              <DialogDescription>
-                Select a student to add to this course.
-              </DialogDescription>
-            </DialogHeader>
-            <Select
-              value={selected}
-              onValueChange={(v) => setSelected(v ?? "")}
+            <UsersRound className="size-4 mr-1" /> Enroll In Bulk
+          </Button>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger
+              render={
+                <Button
+                  size="sm"
+                  className="rounded-full"
+                  disabled={available.length === 0}
+                />
+              }
             >
-              <SelectTrigger>
-                <SelectValue placeholder="Choose a student" />
-              </SelectTrigger>
-              <SelectContent>
-                {available.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name} · {s.email}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <DialogFooter>
-              <Button onClick={addEnrollment} disabled={busy || !selected} className="rounded-full">
-                {busy ? <Loader2 className="size-4 animate-spin mr-1" /> : <UserPlus className="size-4 mr-1" />}
-                Enroll
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <UserPlus className="size-4 mr-1" /> Add Students
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Add students to {courseName}</DialogTitle>
+                <DialogDescription>
+                  Tick everyone you want. {selected.length} selected.
+                </DialogDescription>
+              </DialogHeader>
+
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by name or email..."
+                className="rounded-xl"
+              />
+
+              <div className="max-h-64 overflow-y-auto rounded-xl border border-outline-variant/40 divide-y divide-outline-variant/30">
+                {filtered.length === 0 ? (
+                  <p className="p-4 text-xs text-on-surface-variant text-center">
+                    {available.length === 0
+                      ? "Every student already has an account and is enrolled."
+                      : "No students match that search."}
+                  </p>
+                ) : (
+                  filtered.map((s) => (
+                    <label
+                      key={s.id}
+                      className="flex items-center gap-3 p-3 cursor-pointer hover:bg-primary/5"
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-primary"
+                        checked={selected.includes(s.id)}
+                        onChange={() => toggle(s.id)}
+                      />
+                      <div className="size-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                        <span className="text-[10px] font-black text-primary">
+                          {s.name.slice(0, 2).toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-on-surface truncate">
+                          {s.name}
+                        </p>
+                        <p className="text-xs text-on-surface-variant truncate">
+                          {s.email}
+                        </p>
+                      </div>
+                    </label>
+                  ))
+                )}
+              </div>
+
+              {filtered.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelected((prev) =>
+                      allVisibleSelected
+                        ? prev.filter((id) => !filtered.some((s) => s.id === id))
+                        : [...new Set([...prev, ...filtered.map((s) => s.id)])],
+                    )
+                  }
+                  className="text-xs font-bold text-primary self-start"
+                >
+                  {allVisibleSelected ? "Clear visible" : "Select all visible"}
+                </button>
+              )}
+
+              <DialogFooter>
+                <Button
+                  onClick={addEnrollment}
+                  disabled={busy || selected.length === 0}
+                  className="rounded-full"
+                >
+                  {busy ? (
+                    <Loader2 className="size-4 animate-spin mr-1" />
+                  ) : (
+                    <UserPlus className="size-4 mr-1" />
+                  )}
+                  Enroll {selected.length > 0 ? selected.length : ""}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {showBulk && (
+          <div className="space-y-4 rounded-2xl border border-outline-variant bg-surface-container-highest/20 p-5">
+            <div className="space-y-2">
+              <Label className="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">
+                Paste the class list
+              </Label>
+              <Textarea
+                value={bulkList}
+                onChange={(e) => setBulkList(e.target.value)}
+                rows={5}
+                placeholder={
+                  "ali.khan@example.com\nBilal Ahmed <bilal@example.com>\n Sana, sana@example.com"
+                }
+                className="rounded-2xl font-mono text-xs leading-relaxed bg-surface-container-low border-outline-variant"
+              />
+              <p className="text-[11px] font-medium text-on-surface-variant">
+                {bulkList.trim()
+                  ? `${parseStudentList(bulkList).length} address${
+                      parseStudentList(bulkList).length === 1 ? "" : "es"
+                    } detected. Everyone must already have a student account.`
+                  : "One per line. Names are optional."}
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button
+                onClick={() => addBulk(false)}
+                disabled={busy || parseStudentList(bulkList).length === 0}
+                className="rounded-full"
+              >
+                {busy ? <Loader2 className="size-4 animate-spin mr-1" /> : <UsersRound className="size-4 mr-1" />}
+                Enroll Listed Students
+              </Button>
+              <Button
+                onClick={() => addBulk(true)}
+                disabled={busy || students.length === 0}
+                variant="outline"
+                className="rounded-full"
+              >
+                <Users className="size-4 mr-1" /> Enroll Every Student
+              </Button>
+            </div>
+          </div>
+        )}
+
         {enrollments.length === 0 ? (
           <div className="text-center py-12">
             <Users className="size-10 text-on-surface-variant/40 mx-auto mb-3" />

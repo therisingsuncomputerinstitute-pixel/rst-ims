@@ -8,6 +8,7 @@ import { db } from "@/db/drizzle";
 import { member, organization, user } from "@/db/schema";
 import { auth } from "@/lib/auth";
 import { supabaseServer } from "@/lib/supabase-server";
+import { createAccountWithPassword } from "@/server/user-accounts";
 
 export type AppRole = "student" | "admin";
 
@@ -141,7 +142,7 @@ export const getCurrentUser = async () => {
 
 export const signIn = async (email: string, password: string) => {
   try {
-    await auth.api.signInEmail({
+    const result = await auth.api.signInEmail({
       body: {
         email,
         password,
@@ -151,6 +152,7 @@ export const signIn = async (email: string, password: string) => {
     return {
       success: true,
       message: "Signed in successfully.",
+      mustChangePassword: Boolean(result?.user?.mustChangePassword),
     };
   } catch (error) {
     const e = error as Error;
@@ -158,6 +160,7 @@ export const signIn = async (email: string, password: string) => {
     return {
       success: false,
       message: e.message || "An unknown error occurred.",
+      mustChangePassword: false,
     };
   }
 };
@@ -215,44 +218,27 @@ export const createAccount = async (input: {
         message: "Invalid role. Choose student or admin.",
       };
     }
+    if (password.length < 8) {
+      return {
+        success: false,
+        message: "Password must be at least 8 characters.",
+      };
+    }
 
     const org = await getDefaultOrganization();
 
-    const result = await auth.api.signUpEmail({
-      body: { email, password, name },
+    const newUser = await createAccountWithPassword({
+      name,
+      email,
+      password,
+      role,
+      organizationId: org.id,
     });
-    const newUserId = result.user?.id;
-    if (!newUserId) {
-      throw new Error("Failed to create user.");
-    }
-
-    await db.update(user).set({ role }).where(eq(user.id, newUserId));
-
-    const existing = await db
-      .select()
-      .from(member)
-      .where(
-        and(eq(member.userId, newUserId), eq(member.organizationId, org.id)),
-      )
-      .limit(1);
-
-    if (existing[0]) {
-      await db
-        .update(member)
-        .set({ role })
-        .where(eq(member.id, existing[0].id));
-    } else {
-      await db.insert(member).values({
-        organizationId: org.id,
-        userId: newUserId,
-        role,
-      });
-    }
 
     return {
       success: true,
       message: `${name}'s account created successfully.`,
-      user: { id: newUserId, name, email, role },
+      user: { id: newUser.id, name: newUser.name, email: newUser.email, role },
     };
   } catch (error) {
     const e = error as Error;

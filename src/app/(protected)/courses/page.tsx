@@ -11,11 +11,26 @@ import {
   Users,
   ArrowRight,
   Loader2,
+  Search,
+  TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { authClient } from "@/lib/auth-client";
 import { listCourses, deleteCourse } from "@/server/ums";
@@ -40,10 +55,10 @@ export default function CoursesPage() {
     load();
   }, [load]);
 
-  const remove = async (id: string) => {
+  const remove = async (id: string, confirmation: string) => {
     setBusy(id);
     try {
-      await deleteCourse(id);
+      await deleteCourse(id, confirmation);
       toast.success("Course deleted");
       router.refresh();
       load();
@@ -71,7 +86,13 @@ export default function CoursesPage() {
                 <Plus className="size-4 mr-1" /> New Course
               </Button>
             </Link>
-          ) : undefined
+          ) : (
+            <Link href="/courses/catalog">
+              <Button variant="secondary" className="rounded-full">
+                <Search className="size-4 mr-1" /> Browse All Courses
+              </Button>
+            </Link>
+          )
         }
       />
 
@@ -161,19 +182,11 @@ export default function CoursesPage() {
                     </Button>
                   </Link>
                   {isAdmin && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="rounded-full text-on-surface-variant hover:text-destructive"
-                      onClick={() => remove(c.id)}
-                      disabled={busy === c.id}
-                    >
-                      {busy === c.id ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        "Delete"
-                      )}
-                    </Button>
+                    <DeleteCourseDialog
+                      course={c}
+                      busy={busy === c.id}
+                      onConfirm={(confirmation) => remove(c.id, confirmation)}
+                    />
                   )}
                 </div>
               </CardContent>
@@ -186,3 +199,109 @@ export default function CoursesPage() {
 }
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Course deletion is irreversible and cascades to quizzes, assignments and
+ * student submissions, so the admin has to type the course code to proceed.
+ */
+function DeleteCourseDialog({
+  course,
+  busy,
+  onConfirm,
+}: {
+  course: Course;
+  busy: boolean;
+  onConfirm: (confirmation: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+
+  useEffect(() => {
+    if (open) setTyped("");
+  }, [open]);
+
+  const matches = typed.trim().toUpperCase() === course.code.toUpperCase();
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-full text-on-surface-variant hover:text-destructive"
+            disabled={busy}
+          />
+        }
+      >
+        Delete
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogMedia className="bg-destructive/10 text-destructive">
+            <TriangleAlert className="size-7" />
+          </AlertDialogMedia>
+          <AlertDialogTitle>Delete {course.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This is permanent and cannot be undone. Everything inside{" "}
+            <span className="font-bold text-foreground">{course.name}</span> is
+            destroyed too:
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <ul className="space-y-1.5 text-xs font-medium text-muted-foreground">
+          <li className="flex items-center gap-2">
+            <Users className="size-3.5 shrink-0" />
+            {course.studentCount} enrolled student
+            {course.studentCount === 1 ? "" : "s"} lose access immediately
+          </li>
+          <li className="flex items-center gap-2">
+            <ClipboardList className="size-3.5 shrink-0" />
+            {course.quizCount} quiz{course.quizCount === 1 ? "" : "es"} and
+            every quiz attempt
+          </li>
+          <li className="flex items-center gap-2">
+            <FileText className="size-3.5 shrink-0" />
+            {course.assignmentCount} assignment
+            {course.assignmentCount === 1 ? "" : "s"} and every submission and
+            grade
+          </li>
+        </ul>
+
+        <div className="space-y-2">
+          <label
+            htmlFor={`confirm-${course.id}`}
+            className="text-xs font-bold text-foreground"
+          >
+            Type{" "}
+            <span className="font-mono bg-muted px-1.5 py-0.5 rounded">
+              {course.code}
+            </span>{" "}
+            to confirm
+          </label>
+          <Input
+            id={`confirm-${course.id}`}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={course.code}
+            autoComplete="off"
+            spellCheck={false}
+            className="rounded-xl font-mono"
+          />
+        </div>
+
+        <AlertDialogFooter>
+          <AlertDialogCancel className="rounded-full">Keep Course</AlertDialogCancel>
+          <AlertDialogAction
+            className="rounded-full bg-destructive text-white hover:bg-destructive/90"
+            disabled={!matches || busy}
+            onClick={() => onConfirm(typed)}
+          >
+            {busy ? <Loader2 className="size-4 animate-spin" /> : null}
+            Delete Forever
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}

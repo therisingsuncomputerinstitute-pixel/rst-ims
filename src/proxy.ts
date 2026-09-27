@@ -26,6 +26,7 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith(route),
   );
   const isAuthRoute = pathname.startsWith("/login");
+  const isSetPasswordRoute = pathname.startsWith("/set-password");
 
   // 2. Early exit: If no session cookie exists, redirect immediately (Fast Edge Check)
   if (!sessionCookie) {
@@ -56,6 +57,12 @@ export async function proxy(request: NextRequest) {
       return NextResponse.next();
     }
 
+    // Accounts created from the emailed credentials must set their own
+    // password before they can use the portal.
+    if (sessionData.user.mustChangePassword && !isSetPasswordRoute) {
+      return NextResponse.redirect(new URL("/set-password", request.url));
+    }
+
     // Redirect logged-in users away from auth routes
     if (isAuthRoute) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
@@ -73,5 +80,7 @@ export async function proxy(request: NextRequest) {
 
 // Ensure the matcher catches everything except static files and API routes
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!api|_next/static|_next/image|favicon.ico|icon.png|apple-icon.png).*)",
+  ],
 };

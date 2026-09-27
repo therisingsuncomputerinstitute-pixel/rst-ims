@@ -1,6 +1,18 @@
 "use client";
 
-import { Loader2, Trash2, UserPlus, ShieldCheck, GraduationCap } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ClipboardCopy,
+  GraduationCap,
+  Loader2,
+  Mail,
+  Send,
+  ShieldCheck,
+  Trash2,
+  UserPlus,
+  UsersRound,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useState } from "react";
 import { toast } from "sonner";
@@ -15,6 +27,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -25,6 +38,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { authClient } from "@/lib/auth-client";
+import { parseStudentList } from "@/lib/student-list";
+import {
+  emailCredentialsToAllStudents,
+  emailCredentialsToUser,
+  enrollStudents,
+  getEmailDeliveryStatus,
+} from "@/server/credentials";
 import {
   createAccount,
   listAccounts,
@@ -39,6 +59,8 @@ type Account = {
   image: string | null;
   role: string;
 };
+
+type IssuedCredential = { email: string; name: string; password: string };
 
 const formSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -63,6 +85,31 @@ export default function UsersPage() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"student" | "admin">("student");
 
+  const [studentList, setStudentList] = React.useState("");
+  const [sharedPassword, setSharedPassword] = React.useState("");
+  const [useSharedPassword, setUseSharedPassword] = React.useState(false);
+  const [sendEmail, setSendEmail] = React.useState(false);
+  const [enrolling, setEnrolling] = React.useState(false);
+  const [emailingAll, setEmailingAll] = React.useState(false);
+  const [emailReady, setEmailReady] = React.useState<boolean | null>(null);
+  const [testSenderOnly, setTestSenderOnly] = React.useState(false);
+  const [issued, setIssued] = React.useState<IssuedCredential[]>([]);
+
+  const parsedStudents = React.useMemo(
+    () => parseStudentList(studentList),
+    [studentList],
+  );
+
+  const existingEmails = React.useMemo(
+    () => new Set(accounts.map((a) => a.email.toLowerCase())),
+    [accounts],
+  );
+
+  const newStudents = React.useMemo(
+    () => parsedStudents.filter((s) => !existingEmails.has(s.email)),
+    [parsedStudents, existingEmails],
+  );
+
   const loadAccounts = React.useCallback(async () => {
     const data = await listAccounts();
     setAccounts(data);
@@ -72,6 +119,10 @@ export default function UsersPage() {
   React.useEffect(() => {
     if (isAdmin) {
       loadAccounts();
+      getEmailDeliveryStatus().then((status) => {
+        setEmailReady(status.configured);
+        setTestSenderOnly(status.testSenderOnly);
+      });
     } else {
       setLoading(false);
     }
@@ -137,6 +188,127 @@ export default function UsersPage() {
     setActing(null);
   };
 
+  const handleEnroll = async () => {
+    if (parsedStudents.length === 0) {
+      toast.error("Paste at least one email address first.");
+      return;
+    }
+    if (sendEmail && emailReady === false) {
+      toast.error("Set a real RESEND_API_KEY in .env first, or untick emailing.");
+      return;
+    }
+
+    const count = newStudents.length;
+    if (
+      !window.confirm(
+        `Enroll ${newStudents.length} new student${
+          newStudents.length === 1 ? "" : "s"
+        }` +
+          (count < parsedStudents.length
+            ? `\n\n${parsedStudents.length - count} already have an account and will be skipped.`
+            : "") +
+          (sendEmail
+            ? "\n\nEach one gets an email with their own temporary password."
+            : "\n\nPasswords will be shown so you can hand them out yourself."),
+      )
+    ) {
+      return;
+    }
+
+    setEnrolling(true);
+    const result = await enrollStudents({
+      list: studentList,
+      sharedPassword: useSharedPassword ? sharedPassword : undefined,
+      sendEmail,
+    });
+    setEnrolling(false);
+
+    if (result.success) {
+      toast.success(result.message, { duration: 6000 });
+    } else {
+      toast.warning(result.message, { duration: 8000 });
+    }
+
+    if (result.skipped?.length) {
+      toast.error(
+        result.skipped.map((s) => `${s.email}: ${s.reason}`).join(" · "),
+        { duration: 10000 },
+      );
+    }
+
+    if (result.credentials?.length) {
+      setIssued(result.credentials);
+    }
+
+    if (result.created > 0 || result.emailed > 0) {
+      setStudentList("");
+      setSharedPassword("");
+      loadAccounts();
+      router.refresh();
+    }
+  };
+
+  const copyIssued = async () => {
+    const text = issued
+      .map((c) => `${c.email}\t${c.password}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copied. Paste into a spreadsheet or send to each student.");
+    } catch {
+      toast.error("Could not copy — select the text and copy manually.");
+    }
+  };
+
+  const handleEmailAll = async () => {
+    if (emailReady === false) {
+      toast.error("Set a real RESEND_API_KEY in .env first.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Send a fresh temporary password to every student with an account?",
+      )
+    ) {
+      return;
+    }
+    setEmailingAll(true);
+    const result = await emailCredentialsToAllStudents();
+    setEmailingAll(false);
+
+    if (result.success) {
+      toast.success(result.message, { duration: 6000 });
+    } else if (result.failures?.length) {
+      toast.warning(result.message, { duration: 8000 });
+      toast.error(
+        result.failures
+          .map((failure) => `${failure.email}: ${failure.error}`)
+          .join(" · "),
+        { duration: 10000 },
+      );
+    } else {
+      toast.error(result.message, { duration: 6000 });
+    }
+  };
+
+  const handleEmailOne = async (userId: string, displayEmail: string) => {
+    if (emailReady === false) {
+      toast.error("Set a real RESEND_API_KEY in .env first.");
+      return;
+    }
+    if (!window.confirm(`Send a fresh temporary password to ${displayEmail}?`)) {
+      return;
+    }
+    setActing(userId);
+    const result = await emailCredentialsToUser(userId);
+    if (result.success) {
+      toast.success(result.message as string, { duration: 6000 });
+    } else {
+      toast.error(result.message as string, { duration: 6000 });
+    }
+    setActing(null);
+  };
+
   return (
     <div className="p-6 md:p-10 space-y-8 max-w-5xl">
       <div className="space-y-1.5">
@@ -144,7 +316,9 @@ export default function UsersPage() {
           Users & Admins
         </h1>
         <p className="text-sm font-medium text-on-surface-variant">
-          Create student and admin accounts. Credentials are provided manually.
+          Create student and admin accounts, then email students their login
+          details. Everyone emailed a temporary password must set their own
+          before they can use the portal.
         </p>
       </div>
 
@@ -223,6 +397,210 @@ export default function UsersPage() {
               </Button>
             </div>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card className="bg-surface-container-low border-outline-variant rounded-[2rem] shadow-sm overflow-hidden">
+        <CardHeader className="p-8 border-b border-outline-variant bg-surface-container-highest/10">
+          <CardTitle className="text-xl font-black uppercase text-on-surface flex items-center gap-2">
+            <UsersRound className="size-5 text-primary" /> Enroll Students In Bulk
+          </CardTitle>
+          <CardDescription className="font-medium text-on-surface-variant">
+            Paste the whole class in one go. Every new address becomes a student
+            account; anyone who already has an account is skipped untouched.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-8 space-y-6">
+          {emailReady === false && (
+            <div className="flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+              <AlertTriangle className="size-4 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="text-xs font-medium text-on-surface-variant leading-relaxed">
+                <span className="font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">
+                  Email not configured.
+                </span>{" "}
+                Add a real <code className="font-mono">RESEND_API_KEY</code> to{" "}
+                <code className="font-mono">.env</code> to switch on emailing.
+                Until then you can still enroll students and hand out the
+                passwords yourself.
+              </p>
+            </div>
+          )}
+
+          {emailReady && testSenderOnly && (
+            <div className="flex items-start gap-3 rounded-2xl border border-sky-500/30 bg-sky-500/10 p-4">
+              <Mail className="size-4 mt-0.5 shrink-0 text-sky-600 dark:text-sky-400" />
+              <p className="text-xs font-medium text-on-surface-variant leading-relaxed">
+                <span className="font-black uppercase tracking-widest text-sky-600 dark:text-sky-400">
+                  Test sender.
+                </span>{" "}
+                You are sending from{" "}
+                <code className="font-mono">onboarding@resend.dev</code>, which
+                Resend only delivers to the inbox registered on the Resend
+                account. Emails to anyone else are rejected and those students
+                are skipped, so use this for testing only.
+              </p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Label className="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">
+              Student Emails
+            </Label>
+            <Textarea
+              value={studentList}
+              onChange={(e) => setStudentList(e.target.value)}
+              rows={7}
+              placeholder={
+                "ali.khan@example.com\nBilal Ahmed <bilal@example.com>\n Sana, sana@example.com"
+              }
+              className="rounded-2xl font-mono text-xs leading-relaxed bg-surface-container-low border-outline-variant"
+            />
+            <p className="text-[11px] font-medium text-on-surface-variant">
+              One per line. Names are optional and detected from formats like{" "}
+              <span className="font-mono">Ali Khan &lt;ali@example.com&gt;</span>{" "}
+              or <span className="font-mono">Sana, sana@example.com</span>.{" "}
+              {parsedStudents.length > 0 && (
+                <span className="font-black text-primary">
+                  {parsedStudents.length} detected
+                  {newStudents.length > 0
+                    ? ` · ${newStudents.length} new`
+                    : " · none new"}
+                  {parsedStudents.length <= 4
+                    ? `: ${parsedStudents
+                        .map((s) => s.name || s.email)
+                        .join(", ")}`
+                    : ""}
+                  .
+                </span>
+              )}
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendEmail}
+                onChange={(e) => setSendEmail(e.target.checked)}
+                disabled={emailReady === false}
+                className="size-4 accent-primary disabled:opacity-40"
+              />
+              <span className="text-xs font-bold uppercase tracking-widest text-on-surface">
+                Email login credentials to each new student
+              </span>
+            </label>
+            {sendEmail && emailReady === false && (
+              <p className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                Unavailable until <code className="font-mono">RESEND_API_KEY</code>{" "}
+                is set.
+              </p>
+            )}
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useSharedPassword}
+                onChange={(e) => setUseSharedPassword(e.target.checked)}
+                className="size-4 accent-primary"
+              />
+              <span className="text-xs font-bold uppercase tracking-widest text-on-surface">
+                Use one shared password for everyone
+              </span>
+            </label>
+            {useSharedPassword && (
+              <div className="space-y-2">
+                <Label className="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">
+                  Shared Password
+                </Label>
+                <Input
+                  type="text"
+                  value={sharedPassword}
+                  onChange={(e) => setSharedPassword(e.target.value)}
+                  placeholder="Minimum 8 characters"
+                  className="rounded-2xl font-mono"
+                />
+                <p className="text-[11px] font-medium text-on-surface-variant">
+                  Off by default &mdash; every student gets a unique random
+                  password instead.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col md:flex-row md:items-center gap-3 pt-2">
+            <Button
+              onClick={handleEnroll}
+              disabled={enrolling || parsedStudents.length === 0 || newStudents.length === 0}
+              className="h-12 px-8 rounded-2xl font-black uppercase tracking-widest text-[11px]"
+            >
+              {enrolling ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <UserPlus className="size-4 mr-2" />
+              )}
+              {sendEmail ? "Enroll & Email Credentials" : "Enroll Students"}
+            </Button>
+            <Button
+              onClick={handleEmailAll}
+              disabled={emailingAll || accounts.length === 0 || emailReady === false}
+              variant="outline"
+              className="h-12 px-8 rounded-2xl font-black uppercase tracking-widest text-[11px]"
+            >
+              {emailingAll ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Send className="size-4 mr-2" />
+              )}
+              Email All Students
+            </Button>
+          </div>
+
+          {issued.length > 0 && (
+            <div className="space-y-3 rounded-2xl border border-outline-variant bg-surface-container-highest/30 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[11px] font-black uppercase tracking-widest text-on-surface">
+                  <Check className="size-4 inline mr-2 text-emerald-500" />
+                  {issued.length} temporary password
+                  {issued.length === 1 ? "" : "s"} issued
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={copyIssued}
+                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  >
+                    <ClipboardCopy className="size-3.5 mr-2" /> Copy All
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setIssued([])}
+                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+              <div className="max-h-64 overflow-y-auto rounded-xl border border-outline-variant/40">
+                <table className="w-full text-left text-xs font-mono">
+                  <tbody>
+                    {issued.map((c) => (
+                      <tr key={c.email} className="border-b border-outline-variant/30 last:border-0">
+                        <td className="px-3 py-2 text-on-surface-variant">{c.email}</td>
+                        <td className="px-3 py-2 text-right font-black text-on-surface">
+                          {c.password}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] font-medium text-on-surface-variant">
+                Shown once and not emailed. Each student must set their own
+                password the first time they sign in.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -310,6 +688,24 @@ export default function UsersPage() {
                             <SelectItem value="admin">Admin</SelectItem>
                           </SelectContent>
                         </Select>
+                        {account.role === "student" && (
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            title="Email a fresh temporary password"
+                            className="h-9 w-9 rounded-xl"
+                            onClick={() =>
+                              handleEmailOne(account.id, account.email)
+                            }
+                            disabled={acting === account.id}
+                          >
+                            {acting === account.id ? (
+                              <Loader2 className="size-4 animate-spin" />
+                            ) : (
+                              <Mail className="size-4" />
+                            )}
+                          </Button>
+                        )}
                         <Button
                           size="icon"
                           variant="outline"
