@@ -1362,6 +1362,71 @@ export const courseResources = pgTable(
   (table) => [index("course_resources_course_idx").on(table.courseId)],
 );
 
+export const ATTENDANCE_STATUSES = [
+  "present",
+  "absent",
+  "late",
+  "excused",
+] as const;
+export type AttendanceStatus = (typeof ATTENDANCE_STATUSES)[number];
+
+export const attendanceSessions = pgTable(
+  "attendance_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+    durationMinutes: integer("duration_minutes").notNull().default(60),
+    code: text("code").notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("attendance_sessions_course_idx").on(table.courseId, table.startsAt),
+    index("attendance_sessions_code_idx").on(table.code),
+  ],
+);
+
+export const attendanceRecords = pgTable(
+  "attendance_records",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => attendanceSessions.id, { onDelete: "cascade" }),
+    studentId: text("student_id").notNull(),
+    status: text("status", { enum: ATTENDANCE_STATUSES })
+      .notNull()
+      .default("absent"),
+    /** "manual" = the admin ticked the roster, "code" = the student self check-in. */
+    method: text("method", { enum: ["manual", "code"] })
+      .notNull()
+      .default("manual"),
+    markedBy: text("marked_by"),
+    markedAt: timestamp("marked_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("attendance_records_session_student_idx").on(
+      table.sessionId,
+      table.studentId,
+    ),
+    index("attendance_records_student_idx").on(table.studentId),
+  ],
+);
+
 export const assignmentAttachments = pgTable(
   "assignment_attachments",
   {
@@ -1420,7 +1485,29 @@ export const coursesRelations = relations(courses, ({ many }) => ({
   assignments: many(assignments),
   courseEnrollments: many(courseEnrollments),
   resources: many(courseResources),
+  attendanceSessions: many(attendanceSessions),
 }));
+
+export const attendanceSessionsRelations = relations(
+  attendanceSessions,
+  ({ one, many }) => ({
+    course: one(courses, {
+      fields: [attendanceSessions.courseId],
+      references: [courses.id],
+    }),
+    records: many(attendanceRecords),
+  }),
+);
+
+export const attendanceRecordsRelations = relations(
+  attendanceRecords,
+  ({ one }) => ({
+    session: one(attendanceSessions, {
+      fields: [attendanceRecords.sessionId],
+      references: [attendanceSessions.id],
+    }),
+  }),
+);
 
 export const courseResourcesRelations = relations(
   courseResources,
@@ -1552,6 +1639,8 @@ export const schema = {
   courses,
   courseEnrollments,
   courseResources,
+  attendanceSessions,
+  attendanceRecords,
   quizzes,
   quizQuestions,
   quizAttempts,
@@ -1561,6 +1650,8 @@ export const schema = {
   coursesRelations,
   courseEnrollmentsRelations,
   courseResourcesRelations,
+  attendanceSessionsRelations,
+  attendanceRecordsRelations,
   quizzesRelations,
   quizQuestionsRelations,
   quizAttemptsRelations,

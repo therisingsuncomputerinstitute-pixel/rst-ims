@@ -1,5 +1,6 @@
 "use server";
 
+import { randomInt } from "node:crypto";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -7,6 +8,9 @@ import { db } from "@/db/drizzle";
 import {
   assignmentAttachments,
   assignments,
+  ATTENDANCE_STATUSES,
+  attendanceRecords,
+  attendanceSessions,
   courseEnrollments,
   courseResources,
   courses,
@@ -22,6 +26,11 @@ import { auth } from "@/lib/auth";
 import { getSupabaseServer } from "@/lib/supabase-server";
 import { letterForPercent } from "@/lib/grading";
 import { parseStudentList } from "@/lib/student-list";
+import {
+  checkRateLimit,
+  clearRateLimit,
+  peekRateLimit,
+} from "@/lib/rate-limit";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Auth helpers
@@ -1626,6 +1635,405 @@ export async function getCourseResourceUrl(resourceId: string) {
     throw new Error("Could not create a download link.");
   }
   return data.signedUrl;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Attendance
+//
+// A session is one class. The admin ticks the roster, and a short code lets
+// students mark themselves present. The code is only accepted from 15 minutes
+// before the class starts until 15 minutes after it ends.
+// ─────────────────────────────────────────────────────────────────────────
+
+const ATTENDANCE_MARGIN_MS = 15 * 60 * 1000;
+/** Wrong codes a student may spend per 15 minutes before being told to wait. */
+const ATTENDANCE_CODE_ATTEMPTS = 10;
+
+const attendanceWindow = (session: {
+  startsAt: Date;
+  durationMinutes: number;
+}) => {
+  const opens = new Date(new Date(session.startsAt).getTime() - ATTENDANCE_MARGIN_MS);
+  const ends = new Date(
+    new Date(session.startsAt).getTime() + session.durationMinutes * 60_000,
+  );
+  return {
+    opensAt: opens,
+    endsAt: ends,
+    closesAt: new Date(ends.getTime() + ATTENDANCE_MARGIN_MS),
+  };
+};
+
+const attendanceIsOpen = (session: {
+  startsAt: Date;
+  durationMinutes: number;
+}) => {
+  const { opensAt, closesAt } = attendanceWindow(session);
+  const now = Date.now();
+  return now >= opensAt.getTime() && now <= closesAt.getTime();
+};
+
+/**
+ * Six digits, first digit never 0, so it reads as a number on a whiteboard.
+ * That is only 900k combinations, which is why `checkInWithCode` is rate
+ * limited and will not confirm whether a code exists.
+ */
+async function generateAttendanceCode() {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    let code = "";
+    for (let i = 0; i < 6; i += 1) {
+      const digit = i === 0 ? 1 + randomInt(9) : randomInt(10);
+      code += String(digit);
+    }
+    const clash = await db.query.attendanceSessions.findFirst({
+      where: eq(attendanceSessions.code, code),
+      columns: { id: true },
+    });
+    if (!clash) return code;
+  }
+  throw new Error("Could not generate a unique code. Please try again.");
+}
+
+const emptyCounts = (): Record<string, number> => ({ present: 0, absent: 0, late: 0, excused: 0 });
+
+export async function createAttendanceSession(
+  courseId: string,
+  input: { title?: string; startsAt: string; durationMinutes: number },
+) {
+  const { admin, orgId } = await requireAdminOrg();
+  await assertCourseInOrg(courseId, orgId);
+
+  const startsAt = new Date(input.startsAt);
+  if (Number.isNaN(startsAt.getTime())) {
+    throw new Error("Pick a valid start time.");
+  }
+  const durationMinutes = Math.round(input.durationMinutes);
+  if (!Number.isFinite(durationMinutes) || durationMinutes < 5 || durationMinutes > 480) {
+    throw new Error("Class length must be between 5 and 480 minutes.");
+  }
+
+  const title =
+    input.title?.trim() ||
+    `Class — ${startsAt.toLocaleString("en-GB", {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+
+  const [created] = await db
+    .insert(attendanceSessions)
+    .values({
+      courseId,
+      organizationId: orgId,
+      title,
+      startsAt,
+      durationMinutes,
+      code: await generateAttendanceCode(),
+      createdBy: admin.id,
+    })
+    .returning();
+
+  return {
+    id: created.id,
+    title: created.title,
+    code: created.code,
+    startsAt: created.startsAt,
+    durationMinutes: created.durationMinutes,
+    ...attendanceWindow(created),
+  };
+}
+
+export async function listAttendanceSessions(courseId: string) {
+  const { orgId } = await requireAdminOrg();
+  await assertCourseInOrg(courseId, orgId);
+
+  const sessions = await db
+    .select()
+    .from(attendanceSessions)
+    .where(
+      and(
+        eq(attendanceSessions.courseId, courseId),
+        eq(attendanceSessions.organizationId, orgId),
+      ),
+    )
+    .orderBy(desc(attendanceSessions.startsAt));
+
+  const records = await db
+    .select({
+      sessionId: attendanceRecords.sessionId,
+      status: attendanceRecords.status,
+    })
+    .from(attendanceRecords)
+    .innerJoin(attendanceSessions, eq(attendanceRecords.sessionId, attendanceSessions.id))
+    .where(eq(attendanceSessions.courseId, courseId));
+
+  const counts = new Map<string, Record<string, number>>();
+  for (const r of records) {
+    const bucket = counts.get(r.sessionId) ?? emptyCounts();
+    bucket[r.status] = (bucket[r.status] ?? 0) + 1;
+    counts.set(r.sessionId, bucket);
+  }
+
+  return sessions.map((s) => {
+    const bucket = counts.get(s.id) ?? emptyCounts();
+    const marked = Object.values(bucket).reduce((a, b) => a + b, 0);
+    return {
+      id: s.id,
+      title: s.title,
+      code: s.code,
+      startsAt: s.startsAt,
+      durationMinutes: s.durationMinutes,
+      isOpenNow: attendanceIsOpen(s),
+      ...attendanceWindow(s),
+      counts: bucket,
+      marked,
+    };
+  });
+}
+
+export async function getAttendanceSheet(sessionId: string) {
+  const { orgId } = await requireAdminOrg();
+  const session = await db.query.attendanceSessions.findFirst({
+    where: (s, { eq: e }) => e(s.id, sessionId),
+  });
+  if (!session) throw new Error("That class session no longer exists.");
+  await assertCourseInOrg(session.courseId, orgId);
+
+  // Same roster the enrollment list shows.
+  const roster = await listEnrolledStudents(session.courseId);
+  const records = await db
+    .select()
+    .from(attendanceRecords)
+    .where(eq(attendanceRecords.sessionId, sessionId));
+  const byStudent = new Map(records.map((r) => [r.studentId, r]));
+
+  return {
+    session: {
+      id: session.id,
+      courseId: session.courseId,
+      title: session.title,
+      code: session.code,
+      startsAt: session.startsAt,
+      durationMinutes: session.durationMinutes,
+      isOpenNow: attendanceIsOpen(session),
+      ...attendanceWindow(session),
+    },
+    students: roster
+      .map((s) => {
+        const record = byStudent.get(s.id);
+        return {
+          id: s.id,
+          name: s.name,
+          email: s.email,
+          status: (record?.status ?? null) as (typeof ATTENDANCE_STATUSES)[number] | null,
+          method: (record?.method ?? null) as "manual" | "code" | null,
+          markedAt: record?.markedAt ?? null,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+export async function saveAttendance(
+  sessionId: string,
+  entries: { studentId: string; status: string }[],
+) {
+  const { admin, orgId } = await requireAdminOrg();
+  const session = await db.query.attendanceSessions.findFirst({
+    where: (s, { eq: e }) => e(s.id, sessionId),
+  });
+  if (!session) throw new Error("That class session no longer exists.");
+  await assertCourseInOrg(session.courseId, orgId);
+
+  const roster = await listEnrolledStudents(session.courseId);
+  const allowed = new Set(roster.map((s) => s.id));
+  const clean = entries.filter(
+    (e): e is { studentId: string; status: (typeof ATTENDANCE_STATUSES)[number] } =>
+      allowed.has(e.studentId) &&
+      (ATTENDANCE_STATUSES as readonly string[]).includes(e.status),
+  );
+  if (clean.length !== entries.length) {
+    throw new Error(
+      "One of those entries is not a student on this course roster, or has an invalid status.",
+    );
+  }
+
+  const existing = await db
+    .select()
+    .from(attendanceRecords)
+    .where(eq(attendanceRecords.sessionId, sessionId));
+  const byStudent = new Map(existing.map((r) => [r.studentId, r]));
+  const now = new Date();
+
+  for (const entry of clean) {
+    const prior = byStudent.get(entry.studentId);
+    // Keep the "self check-in" badge when the admin confirms the same result.
+    const keepMethod = prior?.method === "code" && entry.status !== "absent";
+    await db
+      .insert(attendanceRecords)
+      .values({
+        sessionId,
+        studentId: entry.studentId,
+        status: entry.status,
+        method: keepMethod ? "code" : "manual",
+        markedBy: admin.id,
+        markedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [attendanceRecords.sessionId, attendanceRecords.studentId],
+        set: {
+          status: entry.status,
+          method: keepMethod ? "code" : "manual",
+          markedBy: admin.id,
+          markedAt: now,
+        },
+      });
+  }
+
+  return { success: true, saved: clean.length };
+}
+
+export async function deleteAttendanceSession(sessionId: string) {
+  const { orgId } = await requireAdminOrg();
+  const session = await db.query.attendanceSessions.findFirst({
+    where: (s, { eq: e }) => e(s.id, sessionId),
+    columns: { id: true, courseId: true },
+  });
+  if (!session) return { success: true };
+  await assertCourseInOrg(session.courseId, orgId);
+  // attendance_records cascade with the session
+  await db.delete(attendanceSessions).where(eq(attendanceSessions.id, sessionId));
+  return { success: true };
+}
+
+/** Student side: swap a code for "present", inside the window only. */
+export async function checkInWithCode(rawCode: string) {
+  const u = await requireUser();
+  const code = rawCode.replace(/\D/g, "");
+  if (code.length !== 6) throw new Error("That code looks wrong — it is 6 digits.");
+
+  // Six digits is only 900k combinations, so cap the guessing. The check runs
+  // before the lookup (otherwise a locked-out student could still brute force),
+  // but only *wrong* codes spend the budget, and a correct one always gets in.
+  const limitKey = `attendance-code:${u.id}`;
+  const limit = peekRateLimit(limitKey, ATTENDANCE_CODE_ATTEMPTS);
+  if (!limit.allowed) {
+    throw new Error(
+      "Too many wrong codes. Wait a few minutes and ask your teacher for the new one.",
+    );
+  }
+
+  // An unknown code and someone else's code must look identical, otherwise this
+  // becomes an oracle for discovering which classes are running.
+  const notRecognised = "That code was not recognised.";
+
+  const session = await db.query.attendanceSessions.findFirst({
+    where: (s, { eq: e }) => e(s.code, code),
+  });
+  const enrolled = session
+    ? await db.query.courseEnrollments.findFirst({
+        where: (ce, { eq: e }) =>
+          and(e(ce.courseId, session.courseId), e(ce.studentId, u.id)),
+      })
+    : null;
+
+  if (!session || !enrolled) {
+    checkRateLimit(limitKey, ATTENDANCE_CODE_ATTEMPTS);
+    throw new Error(notRecognised);
+  }
+
+  const window = attendanceWindow(session);
+  const now = Date.now();
+  if (now < window.opensAt.getTime()) {
+    throw new Error(
+      `Too early — check-in opens at ${window.opensAt.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      })}.`,
+    );
+  }
+  if (now > window.closesAt.getTime()) throw new Error("That code has expired.");
+
+  const already = await db.query.attendanceRecords.findFirst({
+    where: (r, { and: andFn, eq: eqFn }) =>
+      andFn(eqFn(r.sessionId, session.id), eqFn(r.studentId, u.id)),
+  });
+  if (already?.method === "code" && already.status === "present") {
+    return {
+      success: true,
+      alreadyCheckedIn: true,
+      title: session.title,
+      startsAt: session.startsAt,
+    };
+  }
+
+  await db
+    .insert(attendanceRecords)
+    .values({
+      sessionId: session.id,
+      studentId: u.id,
+      status: "present",
+      method: "code",
+      markedBy: null,
+      markedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [attendanceRecords.sessionId, attendanceRecords.studentId],
+      set: { status: "present", method: "code", markedBy: null, markedAt: new Date() },
+    });
+
+  clearRateLimit(limitKey);
+  return {
+    success: true,
+    alreadyCheckedIn: false,
+    title: session.title,
+    startsAt: session.startsAt,
+  };
+}
+
+/** The student's own recent classes, for the check-in page. */
+export async function listMyAttendance() {
+  const u = await requireUser();
+  const rows = await db
+    .select({
+      sessionId: attendanceSessions.id,
+      title: attendanceSessions.title,
+      courseId: attendanceSessions.courseId,
+      courseName: courses.name,
+      courseCode: courses.code,
+      startsAt: attendanceSessions.startsAt,
+      durationMinutes: attendanceSessions.durationMinutes,
+      status: attendanceRecords.status,
+      method: attendanceRecords.method,
+    })
+    .from(attendanceSessions)
+    .innerJoin(
+      courseEnrollments,
+      and(
+        eq(courseEnrollments.courseId, attendanceSessions.courseId),
+        eq(courseEnrollments.studentId, u.id),
+      ),
+    )
+    .leftJoin(
+      attendanceRecords,
+      and(
+        eq(attendanceRecords.sessionId, attendanceSessions.id),
+        eq(attendanceRecords.studentId, u.id),
+      ),
+    )
+    .leftJoin(courses, eq(courses.id, attendanceSessions.courseId))
+    .orderBy(desc(attendanceSessions.startsAt))
+    .limit(20);
+
+  return rows.map((r) => ({
+    ...r,
+    isOpenNow: attendanceIsOpen({
+      startsAt: r.startsAt,
+      durationMinutes: r.durationMinutes,
+    }),
+  }));
 }
 
 export async function listPendingSubmissions() {

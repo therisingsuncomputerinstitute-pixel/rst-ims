@@ -19,6 +19,7 @@ import {
   UserPlus,
   GraduationCap,
   UsersRound,
+  CalendarCheck,
   TriangleAlert,
   Library,
   Link2,
@@ -53,6 +54,7 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { parseStudentList } from "@/lib/student-list";
 import { fileSizeLabel } from "@/components/ums/assignment-files";
+import { AttendanceTab } from "@/components/ums/attendance-tab";
 import { authClient } from "@/lib/auth-client";
 import {
   getCourse,
@@ -81,7 +83,9 @@ export default function CourseDetailPage() {
 
   const [data, setData] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"overview" | "students" | "resources">("overview");
+  const [tab, setTab] = useState<
+  "overview" | "students" | "resources" | "attendance"
+>("overview");
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -185,6 +189,14 @@ export default function CourseDetailPage() {
           </span>
         </TabBtn>
         {isAdmin && (
+          <TabBtn
+            active={tab === "attendance"}
+            onClick={() => setTab("attendance")}
+          >
+            <CalendarCheck className="size-4 mr-1.5" /> Attendance
+          </TabBtn>
+        )}
+        {isAdmin && (
           <TabBtn active={tab === "students"} onClick={() => setTab("students")}>
             <Users className="size-4 mr-1.5" /> Students
             <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">
@@ -205,6 +217,8 @@ export default function CourseDetailPage() {
           setBusy={setBusy}
           load={load}
         />
+      ) : tab === "attendance" && isAdmin ? (
+        <AttendanceTab courseId={courseId} />
       ) : tab === "resources" ? (
         <ResourcesTab
           courseId={courseId}

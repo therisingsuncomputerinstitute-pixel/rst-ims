@@ -147,7 +147,27 @@ Quizzes are **auto-graded**; grades appear in the grades table and student stats
    you as the admin.
 5. Deleting a resource also deletes the uploaded file from storage.
 
-### 2.7 Grade an assignment submission
+### 2.7 Take attendance
+
+1. Open the course page → the **Attendance** tab → **New class**.
+2. Set the class:
+   - **Class name** (optional — defaults to the date and time)
+   - **Starts at** — defaults to now; change it for a later class
+   - **Class length** — pick a preset (30/45/60/90/120/180 min) or **Custom**
+     and type any length between 5 and 480 minutes
+3. **Create & show code** → a **6-digit** code (first digit never 0, so it reads
+   as a number on the whiteboard) appears with a copy button. It is saved as
+   **Done**.
+4. The code is only accepted **from 15 minutes before the class starts until 15
+   minutes after it ends**, then it stops working. Each class gets its own code.
+5. **Take attendance** opens the roster — the same list as the **Students** tab —
+   with a Present / Late / Absent / Excused dropdown per student, plus
+   **Mark all** shortcuts. Unmarked students stay *Not marked* until you save.
+6. Students who typed the code in **Attendance** show *checked in with the code*;
+   saving the same result keeps that badge so you can see who attended unprompted.
+7. The **Code live** badge on a class tells you the code still works right now.
+
+### 2.8 Grade an assignment submission
 
 There are two entry points (both open the same page):
 
@@ -160,14 +180,14 @@ There are two entry points (both open the same page):
 4. In the **Grade submission** dialog: enter score (0–max score), add **Feedback** (optional).
 5. **Save grade** → status flips to Graded, percentage auto-computed.
 
-### 2.8 Manage users (accounts)
+### 2.9 Manage users (accounts)
 
 1. Go to **Users** (`/users`).
 2. **Create account** → name, email, password (min 8 chars), **role** (admin or student).
 3. Change a role anytime with the role dropdown on the row.
 4. **Delete** removes the account permanently.
 
-### 2.9 Enroll students in bulk (accounts)
+### 2.10 Enroll students in bulk (accounts)
 
 This is the quickest way to onboard a whole class.
 
@@ -200,7 +220,7 @@ This is the quickest way to onboard a whole class.
 > If a single send fails, that student's password is rolled back automatically
 > and the failure is listed in the toast.
 
-### 2.10 Settings / profile
+### 2.11 Settings / profile
 
 1. **Settings** (`/settings`) — update your profile (name, current password, change password).
 
@@ -227,7 +247,16 @@ This is the quickest way to onboard a whole class.
   course are refused the file even if they have the link, because downloads are
   permission-checked on the server and expire after an hour.
 
-### 3.3 Take a quiz
+### 3.3 Check in to a class
+
+- Open **Attendance** in the sidebar and type the code your teacher shows.
+- The code works from **15 minutes before the class until 15 minutes after it
+  ends** — try it early and it tells you the time it opens; try it late and it
+  says it has expired.
+- You can only check in to a class you are enrolled in, and typing it twice is
+  harmless. Below the box, every class you are enrolled in shows your status.
+
+### 3.4 Take a quiz
 
 1. On your **Dashboard** (`/dashboard`) open **My Courses**, or go to **Courses**
    and open a course you're enrolled in.
@@ -238,7 +267,7 @@ This is the quickest way to onboard a whole class.
 5. The quiz is **auto-graded** immediately → you see your **score** and a per-question
    review (right/wrong with correct answers).
 
-### 3.4 Submit an assignment
+### 3.5 Submit an assignment
 
 1. Open the assignment (`/assignments/<assignmentId>`) from a course or the dashboard.
 2. Read the text **Instructions**. If the admin attached files, they're shown in
@@ -251,7 +280,7 @@ This is the quickest way to onboard a whole class.
 5. You can **Update submission** (re-upload a new file). If already graded, the
    existing score is kept until the admin re-grades it.
 
-### 3.5 See your grades
+### 3.6 See your grades
 
 - **Grades** page (`/grades`): every graded quiz and assignment with earned points,
   max points and percentage.
@@ -293,6 +322,22 @@ This is the quickest way to onboard a whole class.
 
 - **Data is stored in Supabase** (Postgres + auth + private `submissions` storage bucket).
   Files are private; downloads use short-lived signed URLs.
+- **Attendance** (`attendance_sessions` + `attendance_records`): one row per class
+  with `starts_at` + `duration_minutes` + a 6-digit `code`, and one row per
+  student per class. The check-in window is `starts_at - 15min` to
+  `starts_at + duration + 15min` (`attendanceWindow` in `src/server/ums.ts`).
+  `method` is `manual` (admin ticked the roster) or `code` (student self
+  check-in). `saveAttendance` re-validates every student id against the course
+  roster, so a mark cannot be written for someone who is not enrolled, and
+  `checkInWithCode` requires an enrollment before accepting a code. A 6-digit code
+  is only 900k combinations, so check-in allows **10 wrong codes per 15 minutes**
+  per student (`src/lib/rate-limit.ts`, in-memory per server instance — on
+  Vercel this is per instance, so it slows guessing rather than eliminating it).
+  Wrong codes spend the budget and a correct one does not, but while the budget
+  is spent *every* attempt is refused, correct code included, which is what
+  stops the brute force. An unknown code and someone else's class code return
+  the **same** message, so the endpoint cannot be used to discover which classes
+  are running.
 - **Course resources** (`course_resources`) hold links and uploaded files per
   course. `kind` is `link` (URL in `url`) or `file` (`file_name`/`file_path`/
   `file_size` in the bucket under `course-resources/<courseId>/`). Deleting a

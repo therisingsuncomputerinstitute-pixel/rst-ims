@@ -8,6 +8,7 @@ import {
   IconReportAnalytics,
   IconSettings,
   IconUsers,
+  IconCalendarCheck,
 } from "@tabler/icons-react";
 import {
   Sidebar,
@@ -31,11 +32,12 @@ import { NavUser } from "./nav-user";
 
 const navMain = [
   { title: "Dashboard", url: "/dashboard", icon: IconLayoutDashboard },
-  { title: "Courses", url: "/courses", icon: IconBooks, studentsOnly: true },
+  { title: "Courses", url: "/courses", icon: IconBooks },
   { title: "Course Catalog", url: "/courses/catalog", icon: IconBooks, studentsOnly: true },
   { title: "Quizzes", url: "/quizzes", icon: IconClipboardText },
   { title: "Assignments", url: "/assignments", icon: IconFileText },
   { title: "Grades", url: "/grades", icon: IconReportAnalytics },
+  { title: "Attendance", url: "/attendance", icon: IconCalendarCheck },
   { title: "Users", url: "/users", icon: IconUsers },
   { title: "Settings", url: "/settings", icon: IconSettings },
 ];
@@ -122,8 +124,8 @@ function NavMain({
     if (item.title === "Users" && !isAdmin) {
       return false;
     }
-    // "Courses" and "Course Catalog" are the same destination for admins, so a
-    // student-only duplicate would be noise in the admin menu.
+    // Admins reach every course from /courses, so the catalog would be a
+    // duplicate for them; students get both links.
     if (item.studentsOnly && isAdmin) {
       return false;
     }
