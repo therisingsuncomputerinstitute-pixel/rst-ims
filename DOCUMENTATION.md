@@ -132,7 +132,22 @@ Quizzes are **auto-graded**; grades appear in the grades table and student stats
 4. **Create assignment** → land on the assignment page (files are uploaded with it).
 5. **Publish** it so students can submit.
 
-### 2.6 Grade an assignment submission
+### 2.6 Add course resources (links and files)
+
+1. Open the course page → the **Resources** tab → **Add**.
+2. Pick a type:
+   - **Link** — a title plus a URL (`https://…`). Google Drive, YouTube and
+     Notion links all work; students open them in a new tab.
+   - **File** — pick a file from your computer (up to 25 MB). It is stored in
+     the private `submissions` bucket and served to students through a
+     short-lived signed link, so the real file path is never sent to the browser.
+3. Add an optional note (e.g. "read before the next class").
+4. The resource is saved as a **draft**. Press **Publish** when students should
+   see it — unpublished resources are hidden from students but stay visible to
+   you as the admin.
+5. Deleting a resource also deletes the uploaded file from storage.
+
+### 2.7 Grade an assignment submission
 
 There are two entry points (both open the same page):
 
@@ -145,14 +160,14 @@ There are two entry points (both open the same page):
 4. In the **Grade submission** dialog: enter score (0–max score), add **Feedback** (optional).
 5. **Save grade** → status flips to Graded, percentage auto-computed.
 
-### 2.7 Manage users (accounts)
+### 2.8 Manage users (accounts)
 
 1. Go to **Users** (`/users`).
 2. **Create account** → name, email, password (min 8 chars), **role** (admin or student).
 3. Change a role anytime with the role dropdown on the row.
 4. **Delete** removes the account permanently.
 
-### 2.8 Enroll students in bulk (accounts)
+### 2.9 Enroll students in bulk (accounts)
 
 This is the quickest way to onboard a whole class.
 
@@ -185,7 +200,7 @@ This is the quickest way to onboard a whole class.
 > If a single send fails, that student's password is rolled back automatically
 > and the failure is listed in the toast.
 
-### 2.9 Settings / profile
+### 2.10 Settings / profile
 
 1. **Settings** (`/settings`) — update your profile (name, current password, change password).
 
@@ -203,7 +218,16 @@ This is the quickest way to onboard a whole class.
   - Courses you're not enrolled in are marked **Locked** and cannot be opened or
     joined from here. Only the administration can enroll a student.
 
-### 3.2 Take a quiz
+### 3.2 Use course resources
+
+- Open any enrolled course → the **Resources** tab.
+- Each item is either a **link** (opens in a new tab) or a **file**
+  (click to download). Only resources your teacher has published appear here.
+- Students enrolled in the course can open them; students not enrolled in the
+  course are refused the file even if they have the link, because downloads are
+  permission-checked on the server and expire after an hour.
+
+### 3.3 Take a quiz
 
 1. On your **Dashboard** (`/dashboard`) open **My Courses**, or go to **Courses**
    and open a course you're enrolled in.
@@ -214,7 +238,7 @@ This is the quickest way to onboard a whole class.
 5. The quiz is **auto-graded** immediately → you see your **score** and a per-question
    review (right/wrong with correct answers).
 
-### 3.3 Submit an assignment
+### 3.4 Submit an assignment
 
 1. Open the assignment (`/assignments/<assignmentId>`) from a course or the dashboard.
 2. Read the text **Instructions**. If the admin attached files, they're shown in
@@ -227,7 +251,7 @@ This is the quickest way to onboard a whole class.
 5. You can **Update submission** (re-upload a new file). If already graded, the
    existing score is kept until the admin re-grades it.
 
-### 3.4 See your grades
+### 3.5 See your grades
 
 - **Grades** page (`/grades`): every graded quiz and assignment with earned points,
   max points and percentage.
@@ -269,6 +293,12 @@ This is the quickest way to onboard a whole class.
 
 - **Data is stored in Supabase** (Postgres + auth + private `submissions` storage bucket).
   Files are private; downloads use short-lived signed URLs.
+- **Course resources** (`course_resources`) hold links and uploaded files per
+  course. `kind` is `link` (URL in `url`) or `file` (`file_name`/`file_path`/
+  `file_size` in the bucket under `course-resources/<courseId>/`). Deleting a
+  course or a resource deletes the stored object too. Uploads are capped at
+  25 MB in `src/server/ums.ts`; `next.config.ts` raises the Server Action body
+  limit to 26 MB (Next's default of 1 MB silently rejects any real upload).
 - **Env vars** (`.env`): `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`,
   `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (must be a legacy `eyJ…` service-role JWT —
   `sb_` keys are rejected by Storage), `SUPABASE_STORAGE_BUCKET`, `ADMIN_SETUP_TOKEN`,

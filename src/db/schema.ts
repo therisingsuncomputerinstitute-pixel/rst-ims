@@ -1340,6 +1340,28 @@ export const assignments = pgTable(
   (table) => [index("assignments_course_idx").on(table.courseId)],
 );
 
+export const courseResources = pgTable(
+  "course_resources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    kind: text("kind", { enum: ["link", "file"] }).notNull().default("link"),
+    url: text("url"),
+    fileName: text("file_name"),
+    filePath: text("file_path"),
+    fileSize: integer("file_size"),
+    isPublished: boolean("is_published").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("course_resources_course_idx").on(table.courseId)],
+);
+
 export const assignmentAttachments = pgTable(
   "assignment_attachments",
   {
@@ -1397,7 +1419,18 @@ export const coursesRelations = relations(courses, ({ many }) => ({
   quizzes: many(quizzes),
   assignments: many(assignments),
   courseEnrollments: many(courseEnrollments),
+  resources: many(courseResources),
 }));
+
+export const courseResourcesRelations = relations(
+  courseResources,
+  ({ one }) => ({
+    course: one(courses, {
+      fields: [courseResources.courseId],
+      references: [courses.id],
+    }),
+  }),
+);
 
 export const courseEnrollmentsRelations = relations(
   courseEnrollments,
@@ -1518,6 +1551,7 @@ export const schema = {
   customer,
   courses,
   courseEnrollments,
+  courseResources,
   quizzes,
   quizQuestions,
   quizAttempts,
@@ -1526,6 +1560,7 @@ export const schema = {
   assignmentAttachments,
   coursesRelations,
   courseEnrollmentsRelations,
+  courseResourcesRelations,
   quizzesRelations,
   quizQuestionsRelations,
   quizAttemptsRelations,

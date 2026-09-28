@@ -8,6 +8,7 @@ import {
   assignmentAttachments,
   assignments,
   courseEnrollments,
+  courseResources,
   courses,
   member,
   organization,
@@ -103,6 +104,24 @@ async function assertAssignmentInOrg(assignmentId: string, orgId: string) {
   if (!assignmentOrg || assignmentOrg !== orgId) {
     throw new Error("You do not have access to this assignment.");
   }
+}
+
+async function assertResourceInOrg(resourceId: string, orgId: string) {
+  const row = await db.query.courseResources.findFirst({
+    where: (r, { eq: e }) => e(r.id, resourceId),
+    columns: { id: true, courseId: true, filePath: true },
+  });
+  if (!row) throw new Error("Resource not found.");
+  await assertCourseInOrg(row.courseId, orgId);
+  return row;
+}
+
+async function removeStorageObjects(paths: string[]) {
+  if (!paths.length) return;
+  if (!(await ensureBucket())) return;
+  await getSupabaseServer()!
+    .storage.from(SUBMISSION_BUCKET)
+    .remove(paths);
 }
 
 async function getOrgStudentIds(orgId: string): Promise<string[]> {
@@ -307,6 +326,9 @@ export async function getCourse(courseId: string) {
       assignments: {
         orderBy: (a, { asc: ascA }) => [ascA(a.createdAt)],
       },
+      resources: {
+        orderBy: (r, { asc: ascR }) => [ascR(r.createdAt)],
+      },
     },
   });
   if (!course) throw new Error("Course not found.");
@@ -364,6 +386,19 @@ export async function getCourse(courseId: string) {
         dueAt: a.dueAt,
         createdAt: a.createdAt,
       })),
+    resources: (course.resources as any[])
+      .filter((r) => isAdmin || r.isPublished)
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        kind: r.kind,
+        url: r.kind === "link" ? r.url : null,
+        fileName: r.fileName,
+        fileSize: r.fileSize,
+        isPublished: r.isPublished,
+        createdAt: r.createdAt,
+      })),
     enrollments,
     isEnrolled,
     isAdmin,
@@ -394,6 +429,14 @@ export async function deleteCourse(
       `Type the course code ${course.code} to confirm deletion.`,
     );
   }
+
+  const stored = await db
+    .select({ filePath: courseResources.filePath })
+    .from(courseResources)
+    .where(eq(courseResources.courseId, courseId));
+  await removeStorageObjects(
+    stored.map((r) => r.filePath).filter((p): p is string => !!p),
+  );
 
   await db
     .delete(courses)
@@ -1428,6 +1471,157 @@ export async function getAssignmentAttachmentUrl(attachmentId: string) {
   const { data, error } = await supabase.storage
     .from(SUBMISSION_BUCKET)
     .createSignedUrl(attachment.filePath, 3600);
+  if (error || !data?.signedUrl) {
+    throw new Error("Could not create a download link.");
+  }
+  return data.signedUrl;
+}
+
+/** Uploaded resources are capped here; next.config.ts allows a little more. */
+const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Course resources are read-only study material: a link, or a file served from
+ * the private bucket through a short-lived signed URL.
+ */
+export async function createCourseResource(
+  courseId: string,
+  formData: FormData,
+) {
+  const { orgId } = await requireAdminOrg();
+  await assertCourseInOrg(courseId, orgId);
+
+  const title = ((formData.get("title") as string) ?? "").trim();
+  if (!title) throw new Error("Title is required.");
+  const description =
+    ((formData.get("description") as string) ?? "").trim() || null;
+
+  if (formData.get("kind") === "file") {
+    const file = formData.get("file") as File | null;
+    if (!file || !file.size) throw new Error("Please choose a file.");
+    if (file.size > MAX_RESOURCE_BYTES) {
+      throw new Error("Files must be 25 MB or smaller.");
+    }
+    if (!(await ensureBucket())) {
+      throw new Error(
+        "Storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
+      );
+    }
+    const supabase = getSupabaseServer()!;
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filePath = `course-resources/${courseId}/${Date.now()}_${Math.random().toString(36).slice(2, 10)}_${safeName}`;
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const { error: uploadError } = await supabase.storage
+      .from(SUBMISSION_BUCKET)
+      .upload(filePath, bytes, {
+        contentType: file.type || "application/octet-stream",
+        upsert: true,
+      });
+    if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
+
+    const [created] = await db
+      .insert(courseResources)
+      .values({
+        courseId,
+        title,
+        description,
+        kind: "file",
+        fileName: file.name,
+        filePath,
+        fileSize: file.size,
+      })
+      .returning();
+    return created;
+  }
+
+  const rawUrl = ((formData.get("url") as string) ?? "").trim();
+  if (!rawUrl) throw new Error("Please add a link.");
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("That link is not valid.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Links must start with http:// or https://");
+  }
+
+  const [created] = await db
+    .insert(courseResources)
+    .values({
+      courseId,
+      title,
+      description,
+      kind: "link",
+      url: parsed.toString(),
+    })
+    .returning();
+  return created;
+}
+
+export async function toggleCourseResourcePublish(
+  resourceId: string,
+  isPublished: boolean,
+) {
+  const { orgId } = await requireAdminOrg();
+  await assertResourceInOrg(resourceId, orgId);
+
+  const [updated] = await db
+    .update(courseResources)
+    .set({ isPublished })
+    .where(eq(courseResources.id, resourceId))
+    .returning();
+  if (!updated) throw new Error("Resource not found.");
+  return { success: true };
+}
+
+export async function deleteCourseResource(resourceId: string) {
+  const { orgId } = await requireAdminOrg();
+  const row = await assertResourceInOrg(resourceId, orgId);
+
+  if (row.filePath) await removeStorageObjects([row.filePath]);
+  await db
+    .delete(courseResources)
+    .where(eq(courseResources.id, resourceId));
+  return { success: true };
+}
+
+/**
+ * Students may only open resources of a course they are enrolled in, and only
+ * once the admin has published them. Admins see drafts.
+ */
+export async function getCourseResourceUrl(resourceId: string) {
+  const u = await requireUser();
+  const resource = await db.query.courseResources.findFirst({
+    where: (r, { eq: e }) => e(r.id, resourceId),
+  });
+  if (!resource) throw new Error("Resource not found.");
+
+  const course = await db.query.courses.findFirst({
+    where: (c, { eq: e }) => e(c.id, resource.courseId),
+    columns: { id: true, organizationId: true },
+  });
+  if (!course) throw new Error("Course not found.");
+
+  const orgId = await getCurrentOrgId();
+  const isAdminOfOrg =
+    u.role === "admin" && !!orgId && course.organizationId === orgId;
+  if (!isAdminOfOrg) {
+    const enrolled = await db.query.courseEnrollments.findFirst({
+      where: (ce, { eq: e }) =>
+        and(e(ce.courseId, course.id), e(ce.studentId, u.id)),
+    });
+    if (!enrolled) throw new Error("You are not enrolled in this course.");
+    if (!resource.isPublished) throw new Error("Resource not available yet.");
+  }
+
+  if (resource.kind === "link") return resource.url;
+  if (!resource.filePath) return null;
+
+  if (!(await ensureBucket())) throw new Error("Storage is not configured.");
+  const { data, error } = await getSupabaseServer()!
+    .storage.from(SUBMISSION_BUCKET)
+    .createSignedUrl(resource.filePath, 3600);
   if (error || !data?.signedUrl) {
     throw new Error("Could not create a download link.");
   }

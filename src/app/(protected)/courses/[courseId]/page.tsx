@@ -20,6 +20,10 @@ import {
   GraduationCap,
   UsersRound,
   TriangleAlert,
+  Library,
+  Link2,
+  Download,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +52,7 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { parseStudentList } from "@/lib/student-list";
+import { fileSizeLabel } from "@/components/ums/assignment-files";
 import { authClient } from "@/lib/auth-client";
 import {
   getCourse,
@@ -59,6 +64,10 @@ import {
   toggleAssignmentPublish,
   deleteQuiz,
   deleteAssignment,
+  createCourseResource,
+  toggleCourseResourcePublish,
+  deleteCourseResource,
+  getCourseResourceUrl,
 } from "@/server/ums";
 
 type Detail = Awaited<ReturnType<typeof getCourse>>;
@@ -72,7 +81,7 @@ export default function CourseDetailPage() {
 
   const [data, setData] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"overview" | "students">("overview");
+  const [tab, setTab] = useState<"overview" | "students" | "resources">("overview");
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -103,7 +112,7 @@ export default function CourseDetailPage() {
     );
   }
 
-  const { course, quizzes, assignments, enrollments } = data;
+  const { course, quizzes, assignments, enrollments, resources } = data;
 
   return (
     <div className="p-4 md:p-8">
@@ -152,6 +161,14 @@ export default function CourseDetailPage() {
                 Assignments
               </p>
             </div>
+            <div className="rounded-2xl border border-outline-variant/60 bg-surface-container-highest/60 px-4 py-3 text-center">
+              <p className="text-xl font-black text-on-surface">
+                {(resources as any[]).length}
+              </p>
+              <p className="text-[9px] font-black uppercase tracking-widest text-on-surface-variant">
+                Resources
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -160,6 +177,12 @@ export default function CourseDetailPage() {
       <div className="flex items-center gap-1 mb-5">
         <TabBtn active={tab === "overview"} onClick={() => setTab("overview")}>
           <BookOpen className="size-4 mr-1.5" /> Overview
+        </TabBtn>
+        <TabBtn active={tab === "resources"} onClick={() => setTab("resources")}>
+          <Library className="size-4 mr-1.5" /> Resources
+          <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary">
+            {(resources as any[]).length}
+          </span>
         </TabBtn>
         {isAdmin && (
           <TabBtn active={tab === "students"} onClick={() => setTab("students")}>
@@ -180,6 +203,13 @@ export default function CourseDetailPage() {
           isClientEnrolled={data.isEnrolled}
           busy={busy}
           setBusy={setBusy}
+          load={load}
+        />
+      ) : tab === "resources" ? (
+        <ResourcesTab
+          courseId={courseId}
+          resources={resources as any[]}
+          isAdmin={isAdmin}
           load={load}
         />
       ) : (
@@ -451,6 +481,359 @@ function ItemCard({
         )}
       </div>
     </div>
+  );
+}
+
+type ResourceRow = {
+  id: string;
+  title: string;
+  description: string | null;
+  kind: "link" | "file";
+  url: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+  isPublished: boolean;
+};
+
+function ResourcesTab({
+  courseId,
+  resources,
+  isAdmin,
+  load,
+}: {
+  courseId: string;
+  resources: ResourceRow[];
+  isAdmin: boolean;
+  load: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<"link" | "file">("link");
+  const [form, setForm] = useState({ title: "", description: "", url: "" });
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const set =
+    (k: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const reset = () => {
+    setForm({ title: "", description: "", url: "" });
+    setFile(null);
+    setKind("link");
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!form.title.trim()) return toast.error("Title is required.");
+    if (kind === "link" && !form.url.trim())
+      return toast.error("Please add a link.");
+    if (kind === "file" && !file) return toast.error("Please choose a file.");
+
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append("title", form.title.trim());
+      fd.append("description", form.description.trim());
+      fd.append("kind", kind);
+      if (kind === "link") fd.append("url", form.url.trim());
+      else if (file) fd.append("file", file);
+
+      await createCourseResource(courseId, fd);
+      toast.success("Resource added");
+      setOpen(false);
+      reset();
+      load();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add resource");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openResource = async (r: ResourceRow) => {
+    try {
+      if (r.kind === "link") {
+        if (r.url) window.open(r.url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      setBusy(`open-${r.id}`);
+      const url = await getCourseResourceUrl(r.id);
+      if (url) window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err: any) {
+      toast.error(err.message || "Could not open resource");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggle = async (r: ResourceRow) => {
+    setBusy(`pub-${r.id}`);
+    try {
+      await toggleCourseResourcePublish(r.id, !r.isPublished);
+      toast.success(r.isPublished ? "Hidden from students" : "Published");
+      load();
+    } catch (e: any) {
+      toast.error(e.message || "Action failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (r: ResourceRow) => {
+    setBusy(`del-${r.id}`);
+    try {
+      await deleteCourseResource(r.id);
+      toast.success("Resource deleted");
+      load();
+    } catch (e: any) {
+      toast.error(e.message || "Delete failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Card className="rounded-3xl border-outline-variant/60">
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Library className="size-4 text-primary" /> Resources
+          </CardTitle>
+          <p className="text-xs text-on-surface-variant mt-1">
+            Links and files for studying. Students only see published items.
+          </p>
+        </div>
+        {isAdmin && (
+          <Dialog
+            open={open}
+            onOpenChange={(o) => {
+              setOpen(o);
+              if (!o) reset();
+            }}
+          >
+            <DialogTrigger
+              render={
+                <Button className="rounded-full shrink-0">
+                  <Plus className="size-4 mr-1" /> Add
+                </Button>
+              }
+            >
+            </DialogTrigger>
+            <DialogContent className="rounded-3xl">
+              <DialogHeader>
+                <DialogTitle>Add resource</DialogTitle>
+                <DialogDescription>
+                  Share a link, or upload a file students can download.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={submit} className="grid gap-4">
+                <div className="grid grid-cols-2 gap-2">
+                  {(["link", "file"] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setKind(k)}
+                      className={cn(
+                        "inline-flex items-center justify-center gap-2 rounded-full border px-4 py-2 text-sm font-bold transition-colors",
+                        kind === k
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-outline-variant/50 text-on-surface-variant hover:text-on-surface",
+                      )}
+                    >
+                      {k === "link" ? (
+                        <Link2 className="size-4" />
+                      ) : (
+                        <Upload className="size-4" />
+                      )}
+                      {k === "link" ? "Link" : "File"}
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <Label htmlFor="res-title">Title</Label>
+                  <Input
+                    id="res-title"
+                    value={form.title}
+                    onChange={set("title")}
+                    placeholder="Week 1 slides"
+                    className="mt-1.5"
+                  />
+                </div>
+
+                {kind === "link" ? (
+                  <div>
+                    <Label htmlFor="res-url">Link</Label>
+                    <Input
+                      id="res-url"
+                      value={form.url}
+                      onChange={set("url")}
+                      placeholder="https://drive.google.com/..."
+                      className="mt-1.5"
+                    />
+                  </div>
+                ) : (
+                  <div>
+                    <Label>File (max 25 MB)</Label>
+                    <label className="mt-1.5 flex cursor-pointer items-center gap-3 rounded-2xl border border-dashed border-outline-variant/50 p-4 transition-colors hover:border-primary/40">
+                      <Upload className="size-4 shrink-0 text-primary" />
+                      <span className="min-w-0 flex-1 truncate text-sm text-on-surface-variant">
+                        {file ? file.name : "Choose a file"}
+                      </span>
+                      {file && (
+                        <span className="shrink-0 text-xs text-on-surface-variant">
+                          {fileSizeLabel(file.size)}
+                        </span>
+                      )}
+                      <input
+                        type="file"
+                        className="hidden"
+                        onChange={(e) => {
+                          setFile(e.target.files?.[0] ?? null);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div>
+                  <Label htmlFor="res-desc">Note (optional)</Label>
+                  <Textarea
+                    id="res-desc"
+                    value={form.description}
+                    onChange={set("description")}
+                    placeholder="Read before the next class"
+                    className="mt-1.5"
+                  />
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="rounded-full"
+                    onClick={() => setOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" className="rounded-full" disabled={saving}>
+                    {saving ? (
+                      <Loader2 className="size-4 animate-spin mr-1" />
+                    ) : (
+                      <Plus className="size-4 mr-1" />
+                    )}
+                    Add resource
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+        )}
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        {resources.length === 0 ? (
+          <EmptyRow
+            text={
+              isAdmin
+                ? "No resources yet. Add a link or upload a file."
+                : "No resources posted yet."
+            }
+          />
+        ) : (
+          resources.map((r) => (
+            <div
+              key={r.id}
+              className="rounded-2xl border border-outline-variant/60 bg-surface-container p-4 flex items-center justify-between gap-3 hover:border-primary/40 transition-colors"
+            >
+              <button
+                onClick={() => openResource(r)}
+                disabled={busy === `open-${r.id}`}
+                className="flex items-center gap-3 min-w-0 text-left"
+              >
+                <div className="p-2.5 rounded-xl bg-primary/10 shrink-0">
+                  {r.kind === "link" ? (
+                    <Link2 className="size-4 text-primary" />
+                  ) : busy === `open-${r.id}` ? (
+                    <Loader2 className="size-4 text-primary animate-spin" />
+                  ) : (
+                    <Download className="size-4 text-primary" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-on-surface truncate">{r.title}</p>
+                  <p className="text-xs text-on-surface-variant truncate">
+                    {r.kind === "link"
+                      ? r.url
+                      : `${r.fileName ?? "File"}${r.fileSize ? ` \u00b7 ${fileSizeLabel(r.fileSize)}` : ""}`}
+                  </p>
+                </div>
+              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {r.description && (
+                  <span className="hidden md:inline text-xs text-on-surface-variant max-w-[16rem] truncate">
+                    {r.description}
+                  </span>
+                )}
+                {isAdmin ? (
+                  <>
+                    <Badge
+                      variant="secondary"
+                      className={cn(
+                        "rounded-full",
+                        r.isPublished
+                          ? "text-emerald-500"
+                          : "text-on-surface-variant",
+                      )}
+                    >
+                      {r.isPublished ? (
+                        <CheckCircle2 className="size-3 mr-1" />
+                      ) : (
+                        <Circle className="size-3 mr-1" />
+                      )}
+                      {r.isPublished ? "Published" : "Draft"}
+                    </Badge>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="rounded-full"
+                      onClick={() => toggle(r)}
+                      disabled={busy === `pub-${r.id}`}
+                    >
+                      {r.isPublished ? "Unpublish" : "Publish"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="rounded-full text-on-surface-variant hover:text-destructive"
+                      onClick={() => remove(r)}
+                      disabled={busy === `del-${r.id}`}
+                    >
+                      {busy === `del-${r.id}` ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="size-4" />
+                      )}
+                    </Button>
+                  </>
+                ) : (
+                  <Badge variant="secondary" className="rounded-full">
+                    {r.kind === "link" ? (
+                      <Link2 className="size-3 mr-1" />
+                    ) : (
+                      <Download className="size-3 mr-1" />
+                    )}
+                    {r.kind === "link" ? "Link" : "File"}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
