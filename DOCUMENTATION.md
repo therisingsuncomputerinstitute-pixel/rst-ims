@@ -155,17 +155,13 @@ Quizzes are **auto-graded**; grades appear in the grades table and student stats
    - **Starts at** — defaults to now; change it for a later class
    - **Class length** — pick a preset (30/45/60/90/120/180 min) or **Custom**
      and type any length between 5 and 480 minutes
-3. **Create & show code** → a **6-digit** code (first digit never 0, so it reads
-   as a number on the whiteboard) appears with a copy button. It is saved as
-   **Done**.
-4. The code is only accepted **from 15 minutes before the class starts until 15
-   minutes after it ends**, then it stops working. Each class gets its own code.
-5. **Take attendance** opens the roster — the same list as the **Students** tab —
+3. **Create class** saves it as **Upcoming**, **Running**, or **Closed** depending
+   on where the current time falls inside `starts_at` → `starts_at` + length.
+4. **Take attendance** opens the roster — the same list as the **Students** tab —
    with a Present / Late / Absent / Excused dropdown per student, plus
    **Mark all** shortcuts. Unmarked students stay *Not marked* until you save.
-6. Students who typed the code in **Attendance** show *checked in with the code*;
-   saving the same result keeps that badge so you can see who attended unprompted.
-7. The **Code live** badge on a class tells you the code still works right now.
+5. Attendance is marked by an **admin only**. There is no student self check-in and
+   no class code; students can only view their own record.
 
 ### 2.8 Grade an assignment submission
 
@@ -323,21 +319,22 @@ This is the quickest way to onboard a whole class.
 - **Data is stored in Supabase** (Postgres + auth + private `submissions` storage bucket).
   Files are private; downloads use short-lived signed URLs.
 - **Attendance** (`attendance_sessions` + `attendance_records`): one row per class
-  with `starts_at` + `duration_minutes` + a 6-digit `code`, and one row per
-  student per class. The check-in window is `starts_at - 15min` to
-  `starts_at + duration + 15min` (`attendanceWindow` in `src/server/ums.ts`).
-  `method` is `manual` (admin ticked the roster) or `code` (student self
-  check-in). `saveAttendance` re-validates every student id against the course
-  roster, so a mark cannot be written for someone who is not enrolled, and
-  `checkInWithCode` requires an enrollment before accepting a code. A 6-digit code
-  is only 900k combinations, so check-in allows **10 wrong codes per 15 minutes**
-  per student (`src/lib/rate-limit.ts`, in-memory per server instance — on
-  Vercel this is per instance, so it slows guessing rather than eliminating it).
-  Wrong codes spend the budget and a correct one does not, but while the budget
-  is spent *every* attempt is refused, correct code included, which is what
-  stops the brute force. An unknown code and someone else's class code return
-  the **same** message, so the endpoint cannot be used to discover which classes
-  are running.
+  with `starts_at` + `duration_minutes`, and one row per student per class.
+  Marking is **admin only** — the `code` column and the `checkInWithCode` action
+  were removed, and students have a read-only view of their own record. The
+  displayed percentage counts **Present + Late** as attended, and ignores
+  **Excused** and unmarked classes. `saveAttendance` re-validates every student id
+  against the course roster, so a mark cannot be written for someone who is not
+  enrolled.
+- **Weighted grading** applies only to the five Agentic AI Architect courses
+  (`courses.uses_weighted_grading`). `src/lib/gradebook.ts` is the single source
+  of truth for the weights: final exam 50, mid term 20, quizzes 10, assignments 10,
+  participation 10 (attendance 3, conduct 2, class participation 5). Quizzes,
+  assignments and the attendance component are **derived** from data the app
+  already stores; only the two exams, conduct, participation and remarks are
+  stored in `gradebook_entries`, which has a unique index on
+  `(course_id, student_id)`. All marks are clamped server-side in
+  `saveGradebookEntry` — the client clamps too, but the server is the boundary.
 - **Course resources** (`course_resources`) hold links and uploaded files per
   course. `kind` is `link` (URL in `url`) or `file` (`file_name`/`file_path`/
   `file_size` in the bucket under `course-resources/<courseId>/`). Deleting a

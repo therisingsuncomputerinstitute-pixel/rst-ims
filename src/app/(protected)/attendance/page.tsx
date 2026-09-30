@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CalendarCheck, Clock, Loader2, LogIn } from "lucide-react";
+import { CalendarCheck, Clock, Info } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { Badge } from "@/components/ui/badge";
@@ -12,17 +12,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ums/page-header";
-import { checkInWithCode, listMyAttendance } from "@/server/ums";
+import { listMyAttendance } from "@/server/ums";
 
 type Row = Awaited<ReturnType<typeof listMyAttendance>>[number];
-
-const errorMessage = (e: unknown) =>
-  e instanceof Error ? e.message : "Something went wrong";
 
 const STATUS_LABEL: Record<string, string> = {
   present: "Present",
@@ -32,8 +26,6 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function AttendancePage() {
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -46,69 +38,63 @@ export default function AttendancePage() {
 
   useEffect(load, [load]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!code.trim()) return;
-    setBusy(true);
-    try {
-      const result = await checkInWithCode(code);
-      toast.success(
-        result.alreadyCheckedIn
-          ? "You already checked in for this class"
-          : `Checked in · ${result.title}`,
-      );
-      setCode("");
-      load();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Excused absences do not count against the student, and an unmarked class is
+  // simply not counted yet — both are excluded from the denominator.
+  const counted = rows.filter((r) => r.status && r.status !== "excused");
+  const attended = counted.filter((r) => r.status === "present" || r.status === "late");
+  const percent = counted.length
+    ? Math.round((attended.length / counted.length) * 100)
+    : null;
 
   return (
     <div className="p-4 md:p-8">
       <PageHeader
         title="Attendance"
-        subtitle="Type the 6-digit code your teacher puts on the board to mark yourself present."
+        subtitle="Your attendance record. Only your teacher can mark you present."
         icon={<CalendarCheck className="size-7 text-primary" />}
       />
 
       <div className="max-w-3xl grid gap-6">
         <Card className="rounded-3xl border-outline-variant/60">
           <CardHeader>
-            <CardTitle>Check in</CardTitle>
+            <CardTitle>Your attendance</CardTitle>
             <CardDescription>
-              The code opens 15 minutes before the class and expires 15 minutes
-              after it ends.
+              Attendance is marked by your teacher during class. Contact them if
+              something looks wrong.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={submit} className="flex flex-col sm:flex-row gap-3 sm:items-end">
-              <div className="flex-1">
-                <Label htmlFor="code">Class code</Label>
-                <Input
-                  id="code"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                  placeholder="e.g. 482913"
-                  maxLength={6}
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="mt-1.5 font-mono text-lg tracking-[0.35em]"
-                />
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div>
+                <p className="text-3xl font-black text-on-surface">
+                  {percent === null ? "—" : `${percent}%`}
+                </p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mt-1">
+                  Attended
+                </p>
               </div>
-              <Button type="submit" className="rounded-full sm:w-40" disabled={busy}>
-                {busy ? (
-                  <Loader2 className="size-4 animate-spin mr-1" />
-                ) : (
-                  <LogIn className="size-4 mr-1" />
-                )}
-                Check in
-              </Button>
-            </form>
+              <div>
+                <p className="text-3xl font-black text-emerald-500">
+                  {attended.length}
+                </p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mt-1">
+                  Classes attended
+                </p>
+              </div>
+              <div>
+                <p className="text-3xl font-black text-on-surface">
+                  {rows.length}
+                </p>
+                <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mt-1">
+                  Total classes
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-on-surface-variant mt-4 flex items-start gap-2">
+              <Info className="size-3.5 mt-0.5 shrink-0" />
+              Excused absences are not counted against you. Classes your teacher
+              has not marked yet are left out of the percentage until they are.
+            </p>
           </CardContent>
         </Card>
 
@@ -144,27 +130,16 @@ export default function AttendancePage() {
                       {r.durationMinutes} min
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {r.isOpenNow && (
-                      <Badge className="rounded-full bg-emerald-500/15 text-emerald-500">
-                        <span className="size-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse" />
-                        Code live
-                      </Badge>
+                  <Badge variant="secondary" className="rounded-full shrink-0">
+                    {r.status ? (
+                      <>
+                        <Clock className="size-3 mr-1" />
+                        {STATUS_LABEL[r.status] ?? r.status}
+                      </>
+                    ) : (
+                      "Not marked"
                     )}
-                    <Badge
-                      variant="secondary"
-                      className="rounded-full"
-                    >
-                      {r.status ? (
-                        <>
-                          <Clock className="size-3 mr-1" />
-                          {STATUS_LABEL[r.status] ?? r.status}
-                        </>
-                      ) : (
-                        "Not marked"
-                      )}
-                    </Badge>
-                  </div>
+                  </Badge>
                 </div>
               ))}
             </div>

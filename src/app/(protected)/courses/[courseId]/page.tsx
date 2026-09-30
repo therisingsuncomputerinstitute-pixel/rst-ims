@@ -55,6 +55,7 @@ import { cn } from "@/lib/utils";
 import { parseStudentList } from "@/lib/student-list";
 import { fileSizeLabel } from "@/components/ums/assignment-files";
 import { AttendanceTab } from "@/components/ums/attendance-tab";
+import { GradebookTab } from "@/components/ums/gradebook-tab";
 import { authClient } from "@/lib/auth-client";
 import {
   getCourse,
@@ -84,7 +85,7 @@ export default function CourseDetailPage() {
   const [data, setData] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<
-  "overview" | "students" | "resources" | "attendance"
+  "overview" | "students" | "resources" | "attendance" | "gradebook"
 >("overview");
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -196,6 +197,14 @@ export default function CourseDetailPage() {
             <CalendarCheck className="size-4 mr-1.5" /> Attendance
           </TabBtn>
         )}
+        {isAdmin && data.course.usesWeightedGrading && (
+          <TabBtn
+            active={tab === "gradebook"}
+            onClick={() => setTab("gradebook")}
+          >
+            <GraduationCap className="size-4 mr-1.5" /> Gradebook
+          </TabBtn>
+        )}
         {isAdmin && (
           <TabBtn active={tab === "students"} onClick={() => setTab("students")}>
             <Users className="size-4 mr-1.5" /> Students
@@ -219,6 +228,8 @@ export default function CourseDetailPage() {
         />
       ) : tab === "attendance" && isAdmin ? (
         <AttendanceTab courseId={courseId} />
+      ) : tab === "gradebook" && isAdmin && data.course.usesWeightedGrading ? (
+        <GradebookTab courseId={courseId} />
       ) : tab === "resources" ? (
         <ResourcesTab
           courseId={courseId}

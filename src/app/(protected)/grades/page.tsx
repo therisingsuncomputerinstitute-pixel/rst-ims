@@ -2,18 +2,19 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { GraduationCap, ListChecks, FileText } from "lucide-react";
+import { GraduationCap, ListChecks, FileText, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { getMyGrades, GradeRow } from "@/server/ums";
+import { getMyGrades, getMyCourseGradebook, GradeRow } from "@/server/ums";
 import { PageHeader } from "@/components/ums/page-header";
 
 function letterColor(letter: string | null) {
@@ -26,11 +27,22 @@ function letterColor(letter: string | null) {
 
 export default function GradesPage() {
   const [data, setData] = useState<Awaited<ReturnType<typeof getMyGrades>> | null>(null);
+  const [books, setBooks] = useState<
+    NonNullable<Awaited<ReturnType<typeof getMyCourseGradebook>>>[]
+  >([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     getMyGrades()
-      .then(setData)
+      .then((d) => {
+        setData(d);
+        // Only the Agentic AI Architect quarters have a weighted gradebook, so
+        // ask per enrolled course and keep the ones that have one.
+        return Promise.all(
+          d.courseIds.map((id) => getMyCourseGradebook(id).catch(() => null)),
+        );
+      })
+      .then((list) => setBooks(list.filter((b) => b !== null)))
       .catch(() => toast.error("Failed to load grades"))
       .finally(() => setLoading(false));
   }, []);
@@ -109,6 +121,174 @@ export default function GradesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {books.length > 0 && (
+        <div className="space-y-4 mb-6">
+          <Card className="rounded-3xl border-outline-variant/60 bg-surface-container">
+            <CardHeader>
+              <CardTitle className="text-sm uppercase tracking-widest text-on-surface-variant">
+                How your grade is built
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs">
+                {[
+                  ["Final exam", 50],
+                  ["Mid term", 20],
+                  ["Quizzes", 10],
+                  ["Assignments", 10],
+                  ["Participation", 10],
+                ].map(([label, weight]) => (
+                  <span key={String(label)} className="text-on-surface-variant">
+                    <span className="font-black text-on-surface">{weight}</span>{" "}
+                    {label}
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-on-surface-variant mt-3">
+                Participation is 10 marks: 3 for attendance, 2 for keeping your
+                phone away and staying focused, and 5 for class participation.
+              </p>
+            </CardContent>
+          </Card>
+          {books.map((b) => (
+            <Card
+              key={b.course.id}
+              className="rounded-3xl border-outline-variant/60"
+            >
+              <CardHeader className="flex flex-row items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <CardTitle className="text-base truncate">
+                    {b.course.name}
+                  </CardTitle>
+                  <CardDescription>
+                    {b.course.code} · weighted grade, out of {b.result.outOf}
+                  </CardDescription>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-3xl font-black text-on-surface">
+                    {b.result.earned ?? "—"}
+                    <span className="text-base text-on-surface-variant">
+                      /{b.result.outOf}
+                    </span>
+                  </p>
+                  <p
+                    className={cn(
+                      "text-sm font-black",
+                      letterColor(b.result.letter),
+                    )}
+                  >
+                    {b.result.percent === null
+                      ? "Not graded yet"
+                      : `${b.result.percent}% · ${b.result.letter}`}
+                  </p>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-3">
+                  {b.result.components.map((c) => {
+                    const lost =
+                      c.earned === null
+                        ? null
+                        : Math.round((c.weight - c.earned) * 100) / 100;
+                    const pctOfWeight =
+                      c.earned === null
+                        ? 0
+                        : Math.min(100, Math.max(0, (c.earned / c.weight) * 100));
+                    const full = lost === 0;
+                    return (
+                      <div key={c.key} className="grid gap-1">
+                        <div className="flex items-baseline justify-between gap-3 text-sm">
+                          <div className="min-w-0">
+                            <span className="font-bold text-on-surface">
+                              {c.label}
+                            </span>
+                            <span className="text-on-surface-variant text-xs">
+                              {" "}
+                              · {c.weight} marks · {c.note}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline gap-2 shrink-0">
+                            {c.earned === null ? (
+                              <span className="text-on-surface-variant/60 text-xs font-bold">
+                                not entered
+                              </span>
+                            ) : (
+                              <>
+                                <span
+                                  className={cn(
+                                    "text-xs font-bold",
+                                    full
+                                      ? "text-emerald-500"
+                                      : "text-rose-400",
+                                  )}
+                                >
+                                  {full
+                                    ? "full marks"
+                                    : `lost ${lost}`}
+                                </span>
+                                <span className="font-black text-on-surface">
+                                  {c.earned} / {c.weight}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <div
+                          className="h-2 w-full rounded-full bg-surface-container-highest overflow-hidden"
+                          role="img"
+                          aria-label={`${c.label}: ${c.earned ?? 0} of ${c.weight} marks`}
+                        >
+                          <div
+                            className={cn(
+                              "h-full rounded-full",
+                              c.earned === null
+                                ? "bg-outline-variant"
+                                : full
+                                  ? "bg-emerald-500"
+                                  : "bg-primary",
+                            )}
+                            style={{ width: `${c.earned === null ? 100 : pctOfWeight}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 flex items-center justify-between rounded-2xl bg-surface-container px-4 py-3 text-sm">
+                  <span className="font-black uppercase tracking-widest text-[10px] text-on-surface-variant">
+                    Total
+                  </span>
+                  <span className="flex items-baseline gap-2">
+                    <span
+                      className={cn(
+                        "text-xs font-bold",
+                        b.result.earned === b.result.outOf
+                          ? "text-emerald-500"
+                          : "text-rose-400",
+                      )}
+                    >
+                      {b.result.earned === b.result.outOf
+                        ? "nothing lost"
+                        : `${Math.round((b.result.outOf - (b.result.earned ?? 0)) * 100) / 100} marks lost in total`}
+                    </span>
+                    <span className="font-black text-on-surface">
+                      {b.result.earned ?? 0} / {b.result.outOf}
+                    </span>
+                  </span>
+                </div>
+                {b.remarks && (
+                  <p className="text-xs text-on-surface-variant mt-3 flex items-start gap-2">
+                    <Info className="size-3.5 mt-0.5 shrink-0" />
+                    {b.remarks}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <Card className="rounded-3xl border-dashed">

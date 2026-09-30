@@ -9,6 +9,7 @@ import {
   boolean,
   integer,
   uuid,
+  numeric,
   jsonb,
   unique,
   check,
@@ -1204,6 +1205,9 @@ export const courses = pgTable(
     description: text("description"),
     instructorName: text("instructor_name"),
     term: text("term"),
+    usesWeightedGrading: boolean("uses_weighted_grading")
+      .notNull()
+      .default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()
@@ -1383,7 +1387,6 @@ export const attendanceSessions = pgTable(
     title: text("title").notNull(),
     startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
     durationMinutes: integer("duration_minutes").notNull().default(60),
-    code: text("code").notNull(),
     createdBy: text("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -1394,7 +1397,6 @@ export const attendanceSessions = pgTable(
   },
   (table) => [
     index("attendance_sessions_course_idx").on(table.courseId, table.startsAt),
-    index("attendance_sessions_code_idx").on(table.code),
   ],
 );
 
@@ -1533,6 +1535,68 @@ export const courseEnrollmentsRelations = relations(
   }),
 );
 
+/**
+ * Teacher-entered marks for the weighted scheme used by the Agentic AI Architect
+ * quarters. Quizzes, assignments and the attendance component are derived from
+ * data the app already stores, so only the exams and the conduct/participation
+ * marks are stored here.
+ */
+export const gradebookEntries = pgTable(
+  "gradebook_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    studentId: text("student_id").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    finalExamScore: numeric("final_exam_score", { precision: 6, scale: 2 }),
+    finalExamMax: numeric("final_exam_max", { precision: 6, scale: 2 })
+      .notNull()
+      .default("50"),
+    midTermScore: numeric("mid_term_score", { precision: 6, scale: 2 }),
+    midTermMax: numeric("mid_term_max", { precision: 6, scale: 2 })
+      .notNull()
+      .default("20"),
+    conductScore: numeric("conduct_score", { precision: 4, scale: 2 })
+      .notNull()
+      .default("0"),
+    participationScore: numeric("participation_score", {
+      precision: 4,
+      scale: 2,
+    })
+      .notNull()
+      .default("0"),
+    remarks: text("remarks"),
+    enteredBy: text("entered_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("gradebook_entries_course_student_idx").on(
+      table.courseId,
+      table.studentId,
+    ),
+    index("gradebook_entries_student_idx").on(table.studentId),
+  ],
+);
+
+export const gradebookEntriesRelations = relations(
+  gradebookEntries,
+  ({ one }) => ({
+    course: one(courses, {
+      fields: [gradebookEntries.courseId],
+      references: [courses.id],
+    }),
+  }),
+);
+
 export const quizzesRelations = relations(quizzes, ({ one, many }) => ({
   course: one(courses, {
     fields: [quizzes.courseId],
@@ -1647,6 +1711,7 @@ export const schema = {
   assignments,
   submissions,
   assignmentAttachments,
+  gradebookEntries,
   coursesRelations,
   courseEnrollmentsRelations,
   courseResourcesRelations,
@@ -1658,4 +1723,5 @@ export const schema = {
   assignmentsRelations,
   submissionsRelations,
   assignmentAttachmentsRelations,
+  gradebookEntriesRelations,
 };

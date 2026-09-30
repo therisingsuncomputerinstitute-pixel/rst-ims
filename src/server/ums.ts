@@ -14,6 +14,7 @@ import {
   courseEnrollments,
   courseResources,
   courses,
+  gradebookEntries,
   member,
   organization,
   quizAttempts,
@@ -25,12 +26,12 @@ import {
 import { auth } from "@/lib/auth";
 import { getSupabaseServer } from "@/lib/supabase-server";
 import { letterForPercent } from "@/lib/grading";
-import { parseStudentList } from "@/lib/student-list";
 import {
-  checkRateLimit,
-  clearRateLimit,
-  peekRateLimit,
-} from "@/lib/rate-limit";
+  computeGradebook,
+  WEIGHTS,
+  type GradebookResult,
+} from "@/lib/gradebook";
+import { parseStudentList } from "@/lib/student-list";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Auth helpers
@@ -369,6 +370,7 @@ export async function getCourse(courseId: string) {
       description: course.description,
       instructorName: course.instructorName,
       term: course.term,
+      usesWeightedGrading: course.usesWeightedGrading,
       createdAt: course.createdAt,
     },
     quizzes: (course.quizzes as any[])
@@ -1646,8 +1648,6 @@ export async function getCourseResourceUrl(resourceId: string) {
 // ─────────────────────────────────────────────────────────────────────────
 
 const ATTENDANCE_MARGIN_MS = 15 * 60 * 1000;
-/** Wrong codes a student may spend per 15 minutes before being told to wait. */
-const ATTENDANCE_CODE_ATTEMPTS = 10;
 
 const attendanceWindow = (session: {
   startsAt: Date;
@@ -1673,26 +1673,6 @@ const attendanceIsOpen = (session: {
   return now >= opensAt.getTime() && now <= closesAt.getTime();
 };
 
-/**
- * Six digits, first digit never 0, so it reads as a number on a whiteboard.
- * That is only 900k combinations, which is why `checkInWithCode` is rate
- * limited and will not confirm whether a code exists.
- */
-async function generateAttendanceCode() {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    let code = "";
-    for (let i = 0; i < 6; i += 1) {
-      const digit = i === 0 ? 1 + randomInt(9) : randomInt(10);
-      code += String(digit);
-    }
-    const clash = await db.query.attendanceSessions.findFirst({
-      where: eq(attendanceSessions.code, code),
-      columns: { id: true },
-    });
-    if (!clash) return code;
-  }
-  throw new Error("Could not generate a unique code. Please try again.");
-}
 
 const emptyCounts = (): Record<string, number> => ({ present: 0, absent: 0, late: 0, excused: 0 });
 
@@ -1730,7 +1710,6 @@ export async function createAttendanceSession(
       title,
       startsAt,
       durationMinutes,
-      code: await generateAttendanceCode(),
       createdBy: admin.id,
     })
     .returning();
@@ -1738,7 +1717,6 @@ export async function createAttendanceSession(
   return {
     id: created.id,
     title: created.title,
-    code: created.code,
     startsAt: created.startsAt,
     durationMinutes: created.durationMinutes,
     ...attendanceWindow(created),
@@ -1782,7 +1760,6 @@ export async function listAttendanceSessions(courseId: string) {
     return {
       id: s.id,
       title: s.title,
-      code: s.code,
       startsAt: s.startsAt,
       durationMinutes: s.durationMinutes,
       isOpenNow: attendanceIsOpen(s),
@@ -1814,7 +1791,6 @@ export async function getAttendanceSheet(sessionId: string) {
       id: session.id,
       courseId: session.courseId,
       title: session.title,
-      code: session.code,
       startsAt: session.startsAt,
       durationMinutes: session.durationMinutes,
       isOpenNow: attendanceIsOpen(session),
@@ -1828,7 +1804,7 @@ export async function getAttendanceSheet(sessionId: string) {
           name: s.name,
           email: s.email,
           status: (record?.status ?? null) as (typeof ATTENDANCE_STATUSES)[number] | null,
-          method: (record?.method ?? null) as "manual" | "code" | null,
+          method: (record?.method ?? null) as "manual" | null,
           markedAt: record?.markedAt ?? null,
         };
       })
@@ -1870,14 +1846,13 @@ export async function saveAttendance(
   for (const entry of clean) {
     const prior = byStudent.get(entry.studentId);
     // Keep the "self check-in" badge when the admin confirms the same result.
-    const keepMethod = prior?.method === "code" && entry.status !== "absent";
-    await db
+      await db
       .insert(attendanceRecords)
       .values({
         sessionId,
         studentId: entry.studentId,
         status: entry.status,
-        method: keepMethod ? "code" : "manual",
+        method: "manual",
         markedBy: admin.id,
         markedAt: now,
       })
@@ -1885,7 +1860,7 @@ export async function saveAttendance(
         target: [attendanceRecords.sessionId, attendanceRecords.studentId],
         set: {
           status: entry.status,
-          method: keepMethod ? "code" : "manual",
+          method: "manual",
           markedBy: admin.id,
           markedAt: now,
         },
@@ -1906,91 +1881,6 @@ export async function deleteAttendanceSession(sessionId: string) {
   // attendance_records cascade with the session
   await db.delete(attendanceSessions).where(eq(attendanceSessions.id, sessionId));
   return { success: true };
-}
-
-/** Student side: swap a code for "present", inside the window only. */
-export async function checkInWithCode(rawCode: string) {
-  const u = await requireUser();
-  const code = rawCode.replace(/\D/g, "");
-  if (code.length !== 6) throw new Error("That code looks wrong — it is 6 digits.");
-
-  // Six digits is only 900k combinations, so cap the guessing. The check runs
-  // before the lookup (otherwise a locked-out student could still brute force),
-  // but only *wrong* codes spend the budget, and a correct one always gets in.
-  const limitKey = `attendance-code:${u.id}`;
-  const limit = peekRateLimit(limitKey, ATTENDANCE_CODE_ATTEMPTS);
-  if (!limit.allowed) {
-    throw new Error(
-      "Too many wrong codes. Wait a few minutes and ask your teacher for the new one.",
-    );
-  }
-
-  // An unknown code and someone else's code must look identical, otherwise this
-  // becomes an oracle for discovering which classes are running.
-  const notRecognised = "That code was not recognised.";
-
-  const session = await db.query.attendanceSessions.findFirst({
-    where: (s, { eq: e }) => e(s.code, code),
-  });
-  const enrolled = session
-    ? await db.query.courseEnrollments.findFirst({
-        where: (ce, { eq: e }) =>
-          and(e(ce.courseId, session.courseId), e(ce.studentId, u.id)),
-      })
-    : null;
-
-  if (!session || !enrolled) {
-    checkRateLimit(limitKey, ATTENDANCE_CODE_ATTEMPTS);
-    throw new Error(notRecognised);
-  }
-
-  const window = attendanceWindow(session);
-  const now = Date.now();
-  if (now < window.opensAt.getTime()) {
-    throw new Error(
-      `Too early — check-in opens at ${window.opensAt.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      })}.`,
-    );
-  }
-  if (now > window.closesAt.getTime()) throw new Error("That code has expired.");
-
-  const already = await db.query.attendanceRecords.findFirst({
-    where: (r, { and: andFn, eq: eqFn }) =>
-      andFn(eqFn(r.sessionId, session.id), eqFn(r.studentId, u.id)),
-  });
-  if (already?.method === "code" && already.status === "present") {
-    return {
-      success: true,
-      alreadyCheckedIn: true,
-      title: session.title,
-      startsAt: session.startsAt,
-    };
-  }
-
-  await db
-    .insert(attendanceRecords)
-    .values({
-      sessionId: session.id,
-      studentId: u.id,
-      status: "present",
-      method: "code",
-      markedBy: null,
-      markedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: [attendanceRecords.sessionId, attendanceRecords.studentId],
-      set: { status: "present", method: "code", markedBy: null, markedAt: new Date() },
-    });
-
-  clearRateLimit(limitKey);
-  return {
-    success: true,
-    alreadyCheckedIn: false,
-    title: session.title,
-    startsAt: session.startsAt,
-  };
 }
 
 /** The student's own recent classes, for the check-in page. */
@@ -2106,7 +1996,9 @@ export type GradeRow = {
 export async function getMyGrades() {
   const u = await requireUser();
   const orgId = await getCurrentOrgId();
-  if (!orgId) return { rows: [], overallPercent: null, overallLetter: null };
+  if (!orgId) {
+    return { rows: [], courseIds: [], overallPercent: null, overallLetter: null };
+  }
 
   const myCourses = await db
     .select({ courseId: courseEnrollments.courseId })
@@ -2114,7 +2006,7 @@ export async function getMyGrades() {
     .where(eq(courseEnrollments.studentId, u.id));
   const courseIds = myCourses.map((r) => r.courseId);
   if (!courseIds.length) {
-    return { rows: [], overallPercent: null, overallLetter: null };
+    return { rows: [], courseIds, overallPercent: null, overallLetter: null };
   }
 
   const courseRows = await db
@@ -2202,6 +2094,7 @@ export async function getMyGrades() {
 
   return {
     rows,
+    courseIds,
     overallPercent,
     overallLetter:
       overallPercent === null ? null : letterForPercent(overallPercent),
@@ -2979,4 +2872,282 @@ export async function getUpcomingForCourse(courseId: string) {
       .orderBy(asc(assignments.dueAt)),
   ]);
   return { quizzes: quizList, assignments: assignmentList };
+}
+/* ------------------------------------------------------------------ *
+ * Weighted gradebook (Agentic AI Architect quarters, out of 100)
+ * ------------------------------------------------------------------ */
+
+export type GradebookStudentRow = {
+  studentId: string;
+  name: string;
+  email: string;
+  finalExam: number | null;
+  midTerm: number | null;
+  conduct: number;
+  participation: number;
+  remarks: string | null;
+  quizPercent: number | null;
+  assignmentPercent: number | null;
+  attendancePercent: number | null;
+  result: GradebookResult;
+};
+
+const asNumber = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Average of a set of (earned, max) pairs, ignoring anything not graded yet. */
+const averagePercent = (pairs: { earned: number | null; max: number | null }[]) => {
+  const usable = pairs.filter(
+    (p) => p.earned !== null && p.max !== null && p.max > 0,
+  );
+  if (!usable.length) return null;
+  const sum = usable.reduce((acc, p) => acc + ((p.earned as number) / (p.max as number)) * 100, 0);
+  return sum / usable.length;
+};
+
+/**
+ * The three derived inputs for one student in one course. Quizzes and
+ * assignments come from graded work; attendance counts present and late as
+ * attended and leaves excused absences out of the denominator entirely.
+ */
+async function derivedInputs(courseId: string, studentId: string) {
+  const [attempts, gradedSubs, records] = await Promise.all([
+    db
+      .select({
+        earned: quizAttempts.scoreEarned,
+        max: quizAttempts.scoreTotal,
+      })
+      .from(quizAttempts)
+      .innerJoin(quizzes, eq(quizAttempts.quizId, quizzes.id))
+      .where(
+        and(
+          eq(quizAttempts.studentId, studentId),
+          eq(quizAttempts.status, "submitted"),
+          eq(quizzes.courseId, courseId),
+        ),
+      ),
+    db
+      .select({ earned: submissions.grade, max: assignments.maxScore })
+      .from(submissions)
+      .innerJoin(assignments, eq(submissions.assignmentId, assignments.id))
+      .where(
+        and(
+          eq(submissions.studentId, studentId),
+          eq(submissions.status, "graded"),
+          eq(assignments.courseId, courseId),
+        ),
+      ),
+    db
+      .select({ status: attendanceRecords.status })
+      .from(attendanceRecords)
+      .innerJoin(
+        attendanceSessions,
+        eq(attendanceRecords.sessionId, attendanceSessions.id),
+      )
+      .where(
+        and(
+          eq(attendanceRecords.studentId, studentId),
+          eq(attendanceSessions.courseId, courseId),
+        ),
+      ),
+  ]);
+
+  const counted = records.filter(
+    (r) => r.status !== null && r.status !== "excused",
+  );
+  const attended = counted.filter(
+    (r) => r.status === "present" || r.status === "late",
+  );
+
+  return {
+    quizPercent: averagePercent(attempts),
+    assignmentPercent: averagePercent(gradedSubs),
+    attendancePercent: counted.length ? (attended.length / counted.length) * 100 : null,
+  };
+}
+
+function assertWeightedCourse(courseId: string, weighted: boolean) {
+  if (!weighted) {
+    throw new Error("This course does not use the weighted grading scheme.");
+  }
+}
+
+/** Admin view: the whole roster with each student's computed grade. */
+export async function listCourseGradebook(courseId: string) {
+  const { orgId } = await requireAdminOrg();
+  const [course] = await db
+    .select({
+      id: courses.id,
+      name: courses.name,
+      code: courses.code,
+      weighted: courses.usesWeightedGrading,
+    })
+    .from(courses)
+    .where(eq(courses.id, courseId));
+  if (!course) throw new Error("Course not found.");
+  await assertCourseInOrg(courseId, orgId);
+  assertWeightedCourse(courseId, course.weighted);
+
+  const roster = await listEnrolledStudents(courseId);
+  const entries = await db
+    .select()
+    .from(gradebookEntries)
+    .where(eq(gradebookEntries.courseId, courseId));
+  const byStudent = new Map(entries.map((e) => [e.studentId, e]));
+
+  const rows: GradebookStudentRow[] = [];
+  for (const s of roster) {
+    const entry = byStudent.get(s.id);
+    const derived = await derivedInputs(courseId, s.id);
+    rows.push({
+      studentId: s.id,
+      name: s.name,
+      email: s.email,
+      finalExam: asNumber(entry?.finalExamScore),
+      midTerm: asNumber(entry?.midTermScore),
+      conduct: asNumber(entry?.conductScore) ?? 0,
+      participation: asNumber(entry?.participationScore) ?? 0,
+      remarks: entry?.remarks ?? null,
+      ...derived,
+      result: computeGradebook({
+        finalExam: asNumber(entry?.finalExamScore),
+        midTerm: asNumber(entry?.midTermScore),
+        conduct: asNumber(entry?.conductScore) ?? 0,
+        participation: asNumber(entry?.participationScore) ?? 0,
+        ...derived,
+      }),
+    });
+  }
+  return { course, weights: WEIGHTS, rows };
+}
+
+/** Save one student's teacher-entered marks. Derived parts are never written. */
+export async function saveGradebookEntry(input: {
+  courseId: string;
+  studentId: string;
+  finalExam: number | null;
+  midTerm: number | null;
+  conduct: number;
+  participation: number;
+  remarks?: string | null;
+}) {
+  const u = await requireAdmin();
+  const { orgId } = await requireAdminOrg();
+  const [course] = await db
+    .select({ weighted: courses.usesWeightedGrading })
+    .from(courses)
+    .where(eq(courses.id, input.courseId));
+  if (!course) throw new Error("Course not found.");
+  await assertCourseInOrg(input.courseId, orgId);
+  assertWeightedCourse(input.courseId, course.weighted);
+
+  const enrolled = await db.query.courseEnrollments.findFirst({
+    where: (ce, { and: andFn, eq: eqFn }) =>
+      andFn(
+        eqFn(ce.courseId, input.courseId),
+        eqFn(ce.studentId, input.studentId),
+      ),
+  });
+  if (!enrolled) throw new Error("That student is not enrolled in this course.");
+
+  // Clamped here, not just in the form: the number inputs are only a
+  // convenience and must not be the thing standing between a typo and 999/50.
+  const bounded = (v: number | null, max: number) =>
+    v === null ? null : Math.min(max, Math.max(0, v));
+  const finalExam = bounded(input.finalExam, WEIGHTS.finalExam);
+  const midTerm = bounded(input.midTerm, WEIGHTS.midTerm);
+  const conduct = bounded(input.conduct, WEIGHTS.conduct);
+  const participation = bounded(input.participation, WEIGHTS.participation);
+  if (conduct === null || participation === null) {
+    throw new Error("Marks could not be read.");
+  }
+  if (
+    (input.finalExam !== null && !Number.isFinite(input.finalExam)) ||
+    (input.midTerm !== null && !Number.isFinite(input.midTerm))
+  ) {
+    throw new Error("Marks must be numbers.");
+  }
+
+  const values = {
+    finalExamScore: finalExam === null ? null : String(finalExam),
+    midTermScore: midTerm === null ? null : String(midTerm),
+    conductScore: String(conduct),
+    participationScore: String(participation),
+    remarks: input.remarks?.trim() || null,
+    enteredBy: u.id,
+    updatedAt: new Date(),
+  };
+
+  await db
+    .insert(gradebookEntries)
+    .values({
+      courseId: input.courseId,
+      studentId: input.studentId,
+      organizationId: orgId,
+      finalExamMax: String(WEIGHTS.finalExam),
+      midTermMax: String(WEIGHTS.midTerm),
+      ...values,
+    })
+    .onConflictDoUpdate({
+      target: [gradebookEntries.courseId, gradebookEntries.studentId],
+      set: values,
+    });
+
+  return { success: true };
+}
+
+/** Student view: their weighted grade for one course. */
+export async function getMyCourseGradebook(courseId: string) {
+  const u = await requireUser();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) return null;
+  const [course] = await db
+    .select({
+      id: courses.id,
+      name: courses.name,
+      code: courses.code,
+      weighted: courses.usesWeightedGrading,
+    })
+    .from(courses)
+    .where(
+      and(
+        eq(courses.id, courseId),
+        eq(courses.organizationId, orgId),
+      ),
+    );
+  if (!course) throw new Error("Course not found.");
+  if (!course.weighted) return null;
+
+  const enrolled = await db.query.courseEnrollments.findFirst({
+    where: (ce, { and: andFn, eq: eqFn }) =>
+      andFn(eqFn(ce.courseId, courseId), eqFn(ce.studentId, u.id)),
+  });
+  if (!enrolled) throw new Error("You are not enrolled in this course.");
+
+  const [entry] = await db
+    .select()
+    .from(gradebookEntries)
+    .where(
+      and(
+        eq(gradebookEntries.courseId, courseId),
+        eq(gradebookEntries.studentId, u.id),
+      ),
+    );
+  const derived = await derivedInputs(courseId, u.id);
+
+  return {
+    course,
+    weights: WEIGHTS,
+    remarks: entry?.remarks ?? null,
+    result: computeGradebook({
+      finalExam: asNumber(entry?.finalExamScore),
+      midTerm: asNumber(entry?.midTermScore),
+      conduct: asNumber(entry?.conductScore) ?? 0,
+      participation: asNumber(entry?.participationScore) ?? 0,
+      ...derived,
+    }),
+  };
 }

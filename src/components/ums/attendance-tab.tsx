@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CalendarCheck,
   Check,
-  ClipboardCopy,
   Clock,
   Loader2,
   Plus,
@@ -105,9 +104,8 @@ export function AttendanceTab({ courseId }: { courseId: string }) {
             <CalendarCheck className="size-4 text-primary" /> Attendance
           </CardTitle>
           <CardDescription className="mt-1">
-            Tick the roster for each class. Students can also mark themselves in
-            with the 6-digit code, which opens 15 minutes before the class and
-            expires 15 minutes after it ends.
+            Create a class, then tick the roster while it runs. Students see
+            their own attendance only — nobody can mark themselves present.
           </CardDescription>
         </div>
         <Button className="rounded-full shrink-0" onClick={() => setOpen(true)}>
@@ -187,7 +185,7 @@ function SessionRow({
             {session.isOpenNow ? (
               <Badge className="rounded-full bg-emerald-500/15 text-emerald-500">
                 <span className="size-1.5 rounded-full bg-emerald-500 mr-1 animate-pulse" />
-                Code live
+                Running now
               </Badge>
             ) : (
               <Badge variant="secondary" className="rounded-full">
@@ -200,8 +198,8 @@ function SessionRow({
           </div>
           <p className="text-xs text-on-surface-variant mt-1">
             {format(new Date(session.startsAt), "EEE d MMM, HH:mm")} ·{" "}
-            {session.durationMinutes} min · code valid{" "}
-            {format(new Date(session.opensAt), "HH:mm")}–
+            {session.durationMinutes} min ·{" "}
+            {format(new Date(session.startsAt), "HH:mm")}–
             {format(new Date(session.closesAt), "HH:mm")}
           </p>
           <div className="flex items-center gap-3 mt-2 flex-wrap">
@@ -225,20 +223,6 @@ function SessionRow({
         </div>
 
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          <Button
-            variant="outline"
-            size="sm"
-            className="rounded-full font-mono"
-            onClick={() => {
-              navigator.clipboard
-                ?.writeText(session.code)
-                .then(() => toast.success("Code copied"))
-                .catch(() => toast.error("Copy failed"));
-            }}
-          >
-            <ClipboardCopy className="size-3.5 mr-1" />
-            {session.code}
-          </Button>
           <Button size="sm" className="rounded-full" onClick={openSheet}>
             <Users className="size-4 mr-1" /> Take attendance
           </Button>
@@ -354,8 +338,7 @@ function RosterDialog({
           <DialogTitle>{sheet.session.title}</DialogTitle>
           <DialogDescription>
             {format(new Date(sheet.session.startsAt), "EEEE d MMMM, HH:mm")} ·{" "}
-            {sheet.session.durationMinutes} min · code{" "}
-            <span className="font-mono font-bold">{sheet.session.code}</span>
+            {sheet.session.durationMinutes} min
           </DialogDescription>
         </DialogHeader>
 
@@ -396,11 +379,6 @@ function RosterDialog({
                     </p>
                     <p className="text-xs text-on-surface-variant truncate">
                       {s.email}
-                      {s.method === "code" && (
-                        <span className="ml-2 text-emerald-500 font-bold">
-                          checked in with the code
-                        </span>
-                      )}
                     </p>
                   </div>
                   <Select
@@ -482,7 +460,7 @@ function NewSessionDialog({
   const [startsAt, setStartsAt] = useState(() => toLocalInput(new Date()));
   const [duration, setDuration] = useState<number | "custom">("custom");
   const [custom, setCustom] = useState("60");
-  const [created, setCreated] = useState<{ code: string; title: string } | null>(
+  const [created, setCreated] = useState<{ title: string } | null>(
     null,
   );
 
@@ -508,7 +486,7 @@ function NewSessionDialog({
         startsAt: new Date(startsAt).toISOString(),
         durationMinutes,
       });
-      setCreated({ code: session.code, title: session.title });
+      setCreated({ title: session.title });
       onCreated();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -530,8 +508,8 @@ function NewSessionDialog({
           <DialogTitle>{created ? "Class created" : "New class"}</DialogTitle>
           <DialogDescription>
             {created
-              ? "Write this code on the board. It only works from 15 minutes before the class until 15 minutes after it ends."
-              : "Set when the class starts and how long it runs — the check-in code follows that window."}
+              ? "The class is created. Open Take attendance to tick the roster while it runs."
+              : "Set when the class starts and how long it runs."}
           </DialogDescription>
         </DialogHeader>
 
@@ -539,35 +517,21 @@ function NewSessionDialog({
           <>
             <div className="rounded-3xl border border-primary/30 bg-primary/5 p-8 text-center">
               <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant">
+                Class created
+              </p>
+              <p className="text-2xl font-black text-primary mt-2">
                 {created.title}
               </p>
-              <p className="font-mono text-5xl font-black tracking-[0.25em] text-primary mt-3">
-                {created.code}
-              </p>
             </div>
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="rounded-full flex-1"
-                onClick={() => {
-                  navigator.clipboard
-                    ?.writeText(created.code)
-                    .then(() => toast.success("Code copied"))
-                    .catch(() => toast.error("Copy failed"));
-                }}
-              >
-                <ClipboardCopy className="size-4 mr-1" /> Copy code
-              </Button>
-              <Button
-                className="rounded-full flex-1"
-                onClick={() => {
-                  onOpenChange(false);
-                  reset();
-                }}
-              >
-                Done
-              </Button>
-            </div>
+            <Button
+              className="rounded-full"
+              onClick={() => {
+                onOpenChange(false);
+                reset();
+              }}
+            >
+              Done
+            </Button>
           </>
         ) : (
           <form onSubmit={submit} className="grid gap-4">
@@ -662,7 +626,7 @@ function NewSessionDialog({
                 ) : (
                   <CalendarCheck className="size-4 mr-1" />
                 )}
-                Create &amp; show code
+                Create class
               </Button>
             </DialogFooter>
           </form>
