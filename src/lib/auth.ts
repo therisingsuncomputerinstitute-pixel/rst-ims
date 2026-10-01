@@ -7,7 +7,6 @@ import { Resend } from "resend";
 import { db } from "@/db/drizzle";
 import { schema } from "@/db/schema";
 import { getActiveOrganization } from "@/server/organizations";
-import { getActiveWorkspace } from "@/server/workspaces";
 import { ac, admin, student } from "./auth/permissions";
 
 const resend = new Resend(process.env.RESEND_API_KEY as string);
@@ -60,59 +59,25 @@ export const auth = betterAuth({
     session: {
       create: {
         before: async (session) => {
+          // The active organization is stamped onto the session row once, at
+          // creation, and read straight off the session afterwards. This hook
+          // deliberately does not run on reads: workspaces and subscription plans
+          // are leftovers from the old WordingsAI app that this IMS never uses,
+          // and refreshing them here cost two extra queries (one inside a
+          // transaction) on every authenticated request.
           const activeOrganization = await getActiveOrganization(
             session.userId,
           );
-          let activeWorkspace = null;
-          if (activeOrganization) {
-            activeWorkspace = await getActiveWorkspace(
-              session.userId,
-              activeOrganization.id,
-            );
-          }
           return {
             data: {
               ...session,
               activeOrganizationId: activeOrganization?.id,
-              activeOrganizationPlan: activeOrganization?.plan,
-              activeWorkspaceId: activeWorkspace?.id,
             },
           };
         },
       },
-      findMany: {
-        after: async (sessions: any[]) => {
-          // Refresh plan for each session to ensure it's up-to-date with database
-          const updated = await Promise.all(
-            sessions.map(async (session: any) => {
-              const activeOrganization = await getActiveOrganization(
-                session.userId,
-                session.activeOrganizationId,
-              );
-              const activeWorkspace = activeOrganization
-                ? await getActiveWorkspace(
-                    session.userId,
-                    activeOrganization.id,
-                    session.activeWorkspaceId,
-                  )
-                : null;
-              return {
-                ...session,
-                activeOrganizationId: activeOrganization?.id,
-                activeOrganizationPlan: activeOrganization?.plan,
-                activeWorkspaceId: activeWorkspace?.id,
-              };
-            }),
-          );
-          return updated;
-        },
-      },
     },
   },
-  database: drizzleAdapter(db, {
-    provider: "pg",
-    schema,
-  }),
   plugins: [
     organization({
       ac: ac,

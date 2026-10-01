@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Plus, Trash2, Save } from "lucide-react";
+import { useRef, useState } from "react";
+import { Loader2, Plus, Trash2, Save, Upload } from "lucide-react";
+import { questionsFromCsv } from "@/lib/quiz-csv";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -20,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { QuizQuestionInput } from "@/server/ums";
 
@@ -88,9 +90,64 @@ export function QuizEditor({
   saving: boolean;
   saveLabel?: string;
 }) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [csvNote, setCsvNote] = useState<string | null>(null);
+
   const set = (k: keyof QuizFormState) => (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
   ) => setForm({ ...form, [k]: e.target.value });
+
+  /**
+   * Reads the CSV in the browser and turns it into question drafts. The file is
+   * never uploaded and never stored: only the extracted text goes into the quiz,
+   * which is saved later through the normal save action.
+   */
+  const importCsv = async (file: File) => {
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      toast.error("Could not read that file.");
+      return;
+    }
+
+    const { questions: imported, warnings, skipped } = questionsFromCsv(
+      text,
+      uid,
+    );
+
+    if (imported.length === 0) {
+      toast.error(
+        warnings[0] ??
+          "No questions found. Expected columns: question no, question, option a, option b, option c, option d.",
+      );
+      setCsvNote(null);
+      return;
+    }
+
+    const blanks = questions.filter(
+      (q) => !q.prompt.trim() && q.options.every((o) => !o.text.trim()),
+    );
+    setQuestions(imported);
+    toast.success(
+      `Added ${imported.length} question${imported.length === 1 ? "" : "s"} from ${file.name}.` +
+        (blanks.length > 0
+          ? ` ${blanks.length} empty question${blanks.length === 1 ? "" : "s"} replaced.`
+          : ""),
+    );
+
+    const notes = [...warnings];
+    if (skipped > 0) notes.push(`${skipped} empty row(s) skipped.`);
+    notes.push("Pick the correct answer for each question, then save.");
+    setCsvNote(notes.join(" "));
+  };
+
+  const onCsvPicked = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Clear the input so re-picking the same file fires change again.
+    e.target.value = "";
+    if (file) void importCsv(file);
+  };
 
   const updateQuestion = (key: string, patch: Partial<QuestionDraft>) =>
     setQuestions(
@@ -359,6 +416,43 @@ export function QuizEditor({
       >
         <Plus className="size-4 mr-1" /> Add question
       </Button>
+
+      <Card className="rounded-3xl border-dashed border-outline-variant">
+        <CardContent className="p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-on-surface">
+                Import questions from a CSV
+              </p>
+              <p className="text-xs text-on-surface-variant">
+                Columns: question no, question, option a, option b, option c,
+                option d. The file is read in your browser and is never uploaded
+                or stored.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full shrink-0"
+              onClick={() => fileInput.current?.click()}
+            >
+              <Upload className="size-4 mr-1" /> Choose CSV
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={onCsvPicked}
+            />
+          </div>
+          {csvNote && (
+            <p className="text-xs text-amber-500 border-t border-outline-variant/40 pt-2">
+              {csvNote}
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="flex justify-end pt-2">
         <Button onClick={onSave} disabled={saving} className="rounded-full">

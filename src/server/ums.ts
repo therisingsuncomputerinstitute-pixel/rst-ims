@@ -3,6 +3,7 @@
 import { randomInt } from "node:crypto";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { headers } from "next/headers";
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { db } from "@/db/drizzle";
 import {
@@ -37,19 +38,33 @@ import { parseStudentList } from "@/lib/student-list";
 // Auth helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-async function requireUser() {
-  const session = await auth.api.getSession({ headers: await headers() });
+/**
+ * One session resolution per request. `requireUser`, `requireAdmin` and
+ * `getCurrentOrgId` each used to call `auth.api.getSession` independently, so a
+ * single action cost two or three identical round-trips to the database. React's
+ * `cache` collapses them into one lookup for the lifetime of the request.
+ */
+const getRequestSession = cache(async () =>
+  auth.api.getSession({ headers: await headers() }),
+);
+
+const requireSession = async () => {
+  const session = await getRequestSession();
   if (!session?.user) redirect("/login");
-  return session.user;
+  return session;
+};
+
+async function requireUser() {
+  const { user } = await requireSession();
+  return user;
 }
 
 async function requireAdmin() {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) redirect("/login");
-  if (session.user.role !== "admin") {
+  const { user } = await requireSession();
+  if (user.role !== "admin") {
     throw new Error("Only admins can perform this action.");
   }
-  return session.user;
+  return user;
 }
 
 async function getOrgIdForUser(userId: string) {
@@ -60,8 +75,7 @@ async function getOrgIdForUser(userId: string) {
 }
 
 async function getCurrentOrgId() {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) redirect("/login");
+  const session = await requireSession();
   const orgId =
     (session.session.activeOrganizationId as string | null) ??
     (await getOrgIdForUser(session.user.id));
