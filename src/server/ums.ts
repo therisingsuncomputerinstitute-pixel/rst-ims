@@ -15,6 +15,8 @@ import {
   courseEnrollments,
   courseResources,
   courses,
+  feeSlips,
+  feeSlipCounters,
   gradebookEntries,
   member,
   organization,
@@ -478,6 +480,7 @@ export async function listStudents() {
       id: user.id,
       name: user.name,
       email: user.email,
+      rollNumber: user.rollNumber,
       createdAt: user.createdAt,
     })
     .from(user)
@@ -3164,4 +3167,376 @@ export async function getMyCourseGradebook(courseId: string) {
       ...derived,
     }),
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Fee slips
+// ─────────────────────────────────────────────────────────────────────────
+
+const SIGNATURE_BUCKET = "signatures";
+
+/** Uploaded PNGs are capped so the PDF generator always gets something sane. */
+const MAX_SIGNATURE_BYTES = 1024 * 1024;
+
+export type FeeSlipRow = {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  rollNumber: string | null;
+  courseId: string;
+  courseName: string;
+  courseCode: string;
+  period: string;
+  originalFee: number;
+  amountPaid: number;
+  /** Unpaid remainder, when the amount paid is below the original fee. */
+  balanceDue: number;
+  /** Why the paid amount differs from the original fee. */
+  adjustmentReason: string | null;
+  /** Overpayment, when the amount paid is above the original fee. */
+  overpaid: number;
+  currency: string;
+  method: string;
+  reference: string | null;
+  paidAt: Date;
+  notes: string | null;
+  slipReference: string;
+};
+
+/** Receipt prefix derived from the institute name, e.g. "Rising Sun Tech" -> RST. */
+function referencePrefix(orgName: string | null | undefined) {
+  const initials = (orgName ?? "")
+    .split(/[^A-Za-z]+/)
+    .filter(Boolean)
+    .map((w) => w[0]!.toUpperCase())
+    .join("");
+  return initials || "RST";
+}
+
+/**
+ * Allocates the next receipt number for an organization (RST/FV/001, 002, …).
+ * The counter is bumped inside a single statement so two admins creating slips
+ * at the same moment can never be handed the same number.
+ */
+async function nextSlipReference(orgId: string, orgName?: string | null) {
+  const [row] = await db
+    .insert(feeSlipCounters)
+    .values({ organizationId: orgId, lastNumber: 1 })
+    .onConflictDoUpdate({
+      target: feeSlipCounters.organizationId,
+      set: { lastNumber: sql`${feeSlipCounters.lastNumber} + 1` },
+    })
+    .returning({ lastNumber: feeSlipCounters.lastNumber });
+
+  const n = row?.lastNumber ?? 1;
+  return `${referencePrefix(orgName)}/FV/${String(n).padStart(3, "0")}`;
+}
+
+const feeSlipSelect = {
+  id: feeSlips.id,
+  studentId: feeSlips.studentId,
+  studentName: user.name,
+  studentEmail: user.email,
+  rollNumber: user.rollNumber,
+  courseId: feeSlips.courseId,
+  courseName: courses.name,
+  courseCode: courses.code,
+  period: feeSlips.period,
+  slipReference: feeSlips.slipReference,
+  adjustmentReason: feeSlips.adjustmentReason,
+  originalFee: feeSlips.originalFee,
+  amountPaid: feeSlips.amountPaid,
+  currency: feeSlips.currency,
+  method: feeSlips.method,
+  reference: feeSlips.reference,
+  paidAt: feeSlips.paidAt,
+  notes: feeSlips.notes,
+} as const;
+
+const asMoney = (n: unknown) => Number(n ?? 0);
+
+type FeeSlipJoined = {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  rollNumber: string | null;
+  courseId: string;
+  courseName: string;
+  courseCode: string;
+  period: string;
+  slipReference: string;
+  adjustmentReason: string | null;
+  originalFee: unknown;
+  amountPaid: unknown;
+  currency: string;
+  method: string;
+  reference: string | null;
+  paidAt: Date;
+  notes: string | null;
+};
+
+function shapeFeeSlip(r: FeeSlipJoined): FeeSlipRow {
+  const originalFee = asMoney(r.originalFee);
+  const amountPaid = asMoney(r.amountPaid);
+  return {
+    id: r.id,
+    studentId: r.studentId,
+    studentName: r.studentName,
+    studentEmail: r.studentEmail,
+    rollNumber: r.rollNumber,
+    courseId: r.courseId,
+    courseName: r.courseName,
+    courseCode: r.courseCode,
+    period: r.period,
+    slipReference: r.slipReference,
+    adjustmentReason: r.adjustmentReason,
+    originalFee,
+    amountPaid,
+    balanceDue: Math.max(0, originalFee - amountPaid),
+    overpaid: Math.max(0, amountPaid - originalFee),
+    currency: r.currency,
+    method: r.method,
+    reference: r.reference,
+    paidAt: r.paidAt,
+    notes: r.notes,
+  };
+}
+
+export async function listFeeSlips(input?: {
+  courseId?: string;
+  studentId?: string;
+}): Promise<FeeSlipRow[]> {
+  const u = await requireUser();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) return [];
+
+  // Conditions are collected and applied once so the builder is never re-wrapped.
+  const conditions = [eq(feeSlips.organizationId, orgId)];
+
+  if (input?.courseId) conditions.push(eq(feeSlips.courseId, input.courseId));
+  if (input?.studentId) conditions.push(eq(feeSlips.studentId, input.studentId));
+
+  if (u.role !== "admin") {
+    // A student only ever sees their own slips, and only for courses they are
+    // actually enrolled in.
+    conditions.push(eq(feeSlips.studentId, u.id));
+    conditions.push(
+      sql`exists (select 1 from course_enrollments ce where ce.course_id = ${feeSlips.courseId} and ce.student_id = ${u.id})`,
+    );
+  }
+
+  const rows = await db
+    .select(feeSlipSelect)
+    .from(feeSlips)
+    .innerJoin(user, eq(feeSlips.studentId, user.id))
+    .innerJoin(courses, eq(feeSlips.courseId, courses.id))
+    .where(and(...conditions));
+
+  return rows
+    .map(shapeFeeSlip)
+    .sort((a, b) => b.paidAt.getTime() - a.paidAt.getTime());
+}
+
+/**
+ * Creates a slip for one student, one course and one period. The admin types both
+ * the original fee and what was actually paid, and the paid amount is
+ * free-form: whatever the student handed over is what gets recorded.
+ */
+export async function createFeeSlip(input: {
+  studentId: string;
+  courseId: string;
+  period: string;
+  originalFee: number;
+  amountPaid: number;
+  method?: string;
+  reference?: string | null;
+  paidAt?: string | null;
+  adjustmentReason?: string | null;
+  notes?: string | null;
+}): Promise<FeeSlipRow> {
+  const admin = await requireAdmin();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) throw new Error("No organization.");
+
+  const period = input.period.trim();
+  if (!period) throw new Error("Enter the billing period, for example October 2026.");
+
+  const originalFee = Number(input.originalFee);
+  const amountPaid = Number(input.amountPaid);
+  if (!Number.isFinite(originalFee) || originalFee < 0) {
+    throw new Error("Enter the original fee as a number.");
+  }
+  if (!Number.isFinite(amountPaid) || amountPaid < 0) {
+    throw new Error("Enter the amount paid as a number.");
+  }
+
+  const course = await db.query.courses.findFirst({
+    where: (c, { and: andFn, eq: eqFn }) =>
+      andFn(eqFn(c.id, input.courseId), eqFn(c.organizationId, orgId)),
+  });
+  if (!course) throw new Error("Course not found.");
+
+  const student = await db.query.user.findFirst({
+    where: (t, { and: andFn, eq: eqFn }) =>
+      andFn(eqFn(t.id, input.studentId), eqFn(t.role, "student")),
+  });
+  if (!student) throw new Error("Student not found.");
+
+  const adjustmentReason = input.adjustmentReason?.trim() || null;
+  // A reduced amount has to say why, otherwise the slip leaves the discount
+  // unexplained to whoever reads it later.
+  if (amountPaid < originalFee && !adjustmentReason) {
+    throw new Error(
+      "Enter a reason for the reduced amount, for example Scholarship or Fee waived.",
+    );
+  }
+
+  const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
+  if (Number.isNaN(paidAt.getTime())) throw new Error("Invalid payment date.");
+
+  const org = await db.query.organization.findFirst({
+    where: (o, { eq: e }) => e(o.id, orgId),
+  });
+
+  // The counter can be ahead of the highest issued reference (for example if a
+  // slip was deleted), so retry a couple of times on the rare collision rather
+  // than failing the payment outright.
+  let created: { id: string } | undefined;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3 && !created; attempt++) {
+    const slipReference = await nextSlipReference(orgId, org?.name);
+    try {
+      [created] = await db
+        .insert(feeSlips)
+        .values({
+          organizationId: orgId,
+          studentId: input.studentId,
+          courseId: input.courseId,
+          period,
+          slipReference,
+          adjustmentReason,
+          originalFee: originalFee.toFixed(2),
+          amountPaid: amountPaid.toFixed(2),
+          method: input.method || "cash",
+          reference: input.reference?.trim() || null,
+          paidAt,
+          notes: input.notes?.trim() || null,
+          createdBy: admin.id,
+        })
+        .returning({ id: feeSlips.id });
+    } catch (e) {
+      lastError = e;
+      const message = String(e);
+      if (message.includes("fee_slips_reference_uidx")) continue;
+      // The unique index on (course, student, period) is what enforces this.
+      if (message.includes("fee_slips_student_course_period_uidx")) {
+        throw new Error(
+          `A slip already exists for ${student.name} for ${period} on this course. Edit or delete it first.`,
+        );
+      }
+      throw e;
+    }
+  }
+
+  if (!created) throw lastError ?? new Error("Could not create the slip.");
+
+  const rows = await db
+    .select(feeSlipSelect)
+    .from(feeSlips)
+    .innerJoin(user, eq(feeSlips.studentId, user.id))
+    .innerJoin(courses, eq(feeSlips.courseId, courses.id))
+    .where(eq(feeSlips.id, created.id));
+
+  return shapeFeeSlip(rows[0]);
+}
+
+export async function updateFeeSlipAmounts(input: {
+  slipId: string;
+  originalFee: number;
+  amountPaid: number;
+  notes?: string | null;
+}): Promise<void> {
+  await requireAdmin();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) throw new Error("No organization.");
+
+  const existing = await db.query.feeSlips.findFirst({
+    where: (t, { and: andFn, eq: eqFn }) =>
+      andFn(eqFn(t.id, input.slipId), eqFn(t.organizationId, orgId)),
+  });
+  if (!existing) throw new Error("Slip not found.");
+
+  const originalFee = Number(input.originalFee);
+  const amountPaid = Number(input.amountPaid);
+  if (!Number.isFinite(originalFee) || originalFee < 0 || !Number.isFinite(amountPaid) || amountPaid < 0) {
+    throw new Error("Enter both amounts as numbers.");
+  }
+
+  await db
+    .update(feeSlips)
+    .set({
+      originalFee: originalFee.toFixed(2),
+      amountPaid: amountPaid.toFixed(2),
+      notes: input.notes?.trim() || null,
+      updatedAt: new Date(),
+    })
+    .where(eq(feeSlips.id, input.slipId));
+}
+
+export async function deleteFeeSlip(slipId: string) {
+  await requireAdmin();
+  const orgId = await getCurrentOrgId();
+  if (!orgId) throw new Error("No organization.");
+  await db.delete(feeSlips).where(eq(feeSlips.id, slipId));
+}
+
+/**
+ * Stores the authorised signature PNGs used on generated slips. One object per
+ * signatory, replaced when re-uploaded.
+ */
+export async function uploadSignature(input: {
+  signatory: string;
+  file: File;
+}) {
+  await requireAdmin();
+  const supabase = getSupabaseServer();
+  if (!supabase) throw new Error("Storage is not configured.");
+
+  const allowed = ["shuja-uz-zaman.png", "muhammad-hamza-sheikh.png"];
+  const name = input.signatory.trim().toLowerCase();
+  if (!allowed.includes(name)) throw new Error("Unknown signatory.");
+
+  if (!input.file || input.file.size === 0) throw new Error("Choose a signature image.");
+  if (input.file.size > MAX_SIGNATURE_BYTES) {
+    throw new Error("Signature images must be under 1 MB.");
+  }
+
+  const bytes = new Uint8Array(await input.file.arrayBuffer());
+
+  const { error } = await supabase.storage
+    .from(SIGNATURE_BUCKET)
+    .upload(name, bytes, { contentType: "image/png", upsert: true });
+  if (error) throw new Error(`Could not save the signature: ${error.message}`);
+}
+
+export async function getSignatureStatus(): Promise<
+  { name: string; uploaded: boolean }[]
+> {
+  await requireAdmin();
+  const supabase = getSupabaseServer();
+  const names = ["shuja-uz-zaman.png", "muhammad-hamza-sheikh.png"];
+  const out = names.map((name) => ({ name, uploaded: false }));
+  if (!supabase) return out;
+
+  for (const file of names) {
+    const { data } = await supabase.storage
+      .from(SIGNATURE_BUCKET)
+      .list("", { search: file });
+    const entry = out.find((o) => o.name === file);
+    if (entry && data?.some((f) => f.name === file)) entry.uploaded = true;
+  }
+  return out;
 }

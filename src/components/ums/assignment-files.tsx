@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef, type Dispatch, type SetStateAction } from "react";
-import { FileText, Plus, X, Download } from "lucide-react";
+import { FileText, Plus, X, Download, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import {
   Select,
   SelectContent,
@@ -173,15 +174,20 @@ export function AttachmentRow({
           <Download className="size-4 mr-1" /> Download
         </Button>
         {onRemove && (
-          <Button
-            type="button"
-            variant="ghost"
+          <ConfirmDelete
+            what="attachment"
+            itemName={attachment.fileName}
             size="icon"
-            className="rounded-full size-8 shrink-0 text-on-surface-variant hover:text-destructive"
-            onClick={onRemove}
-          >
-            <X className="size-4" />
-          </Button>
+            icon={<X className="size-4" />}
+            className="rounded-full size-8 shrink-0 text-on-surface-variant hover:text-error hover:bg-error/10"
+            consequences={
+              <li className="flex items-center gap-2">
+                <Trash2 className="size-3.5 shrink-0" />
+                The file is deleted from storage when you save, and cannot be restored
+              </li>
+            }
+            onConfirm={onRemove}
+          />
         )}
       </div>
     </div>

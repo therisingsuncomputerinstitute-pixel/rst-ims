@@ -13,12 +13,15 @@ import {
   Trash2,
   UserPlus,
   UsersRound,
+  TriangleAlert,
+  Receipt,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import React, { useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
+import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import {
   Card,
   CardContent,
@@ -174,10 +177,7 @@ export default function UsersPage() {
     setActing(null);
   };
 
-  const handleRemove = async (userId: string, displayName: string) => {
-    if (!window.confirm(`Delete the account for ${displayName}? This cannot be undone.`)) {
-      return;
-    }
+  const handleRemove = async (userId: string) => {
     setActing(userId);
     const result = await removeAccount(userId);
     if (result.success) {
@@ -742,17 +742,33 @@ export default function UsersPage() {
                             )}
                           </Button>
                         )}
-                        <Button
+                        <ConfirmDelete
+                          what="account"
+                          itemName={account.name}
+                          confirmWord="DELETE"
                           size="icon"
-                          variant="outline"
+                          icon={<Trash2 className="size-4" />}
                           className="h-9 w-9 rounded-xl text-destructive border-destructive/20 hover:bg-destructive/10"
-                          onClick={() =>
-                            handleRemove(account.id, account.name)
+                          consequences={
+                            <>
+                              <li className="flex items-center gap-2">
+                                <Trash2 className="size-3.5 shrink-0" />
+                                The login is deleted, so the student can no longer
+                                sign in
+                              </li>
+                              <li className="flex items-center gap-2">
+                                <TriangleAlert className="size-3.5 shrink-0" />
+                                Enrollments, submissions, grades and attendance rows
+                                for this student are removed too
+                              </li>
+                              <li className="flex items-center gap-2">
+                                <Receipt className="size-3.5 shrink-0" />
+                                Their fee slips and roll number are deleted as well
+                              </li>
+                            </>
                           }
-                          disabled={acting === account.id}
-                        >
-                          <Trash2 className="size-4" />
-                        </Button>
+                          onConfirm={() => handleRemove(account.id)}
+                        />
                       </>
                     )}
                   </div>

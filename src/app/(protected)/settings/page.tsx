@@ -9,6 +9,7 @@ import {
   AtSign,
   Lock,
   Loader2,
+  TriangleAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +28,7 @@ import { ThemeButton } from "@/components/theme-button";
 import { toast } from "sonner";
 import imageCompression from "browser-image-compression";
 import { uploadAvatar, deleteAvatarAction } from "@/server/users";
+import { ConfirmDelete } from "@/components/ums/confirm-delete";
 
 const tabs = [
   { id: "profile", label: "Profile", icon: User },
@@ -207,14 +209,20 @@ export default function SettingsPage() {
                             "Change Image"
                           )}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          disabled={uploading}
-                          onClick={handleDeleteAvatar}
+                        <ConfirmDelete
+                          what="photo"
+                          itemName="your profile photo"
+                          trigger="Delete"
                           className="rounded-xl font-bold uppercase tracking-widest text-[10px] text-destructive hover:bg-destructive/10"
-                        >
-                          Delete
-                        </Button>
+                          consequences={
+                            <li className="flex items-center gap-2">
+                              <TriangleAlert className="size-3.5 shrink-0" />
+                              The image is removed from your profile and you fall back
+                              to your initials
+                            </li>
+                          }
+                          onConfirm={handleDeleteAvatar}
+                        />
                       </div>
                     </div>
                   </div>

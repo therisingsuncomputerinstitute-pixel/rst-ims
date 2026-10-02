@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -622,15 +623,28 @@ function AdminQuizView({
               <Button variant="outline" className="rounded-full" size="sm" onClick={toggle} disabled={busy}>
                 {busy ? <Loader2 className="size-4 animate-spin" /> : (quiz as any).isPublished ? "Unpublish" : "Publish"}
               </Button>
-              <Button
-                variant="ghost"
+              <ConfirmDelete
+                what="quiz"
+                itemName={(quiz as any)?.title ?? "this quiz"}
                 size="icon"
-                className="rounded-full text-on-surface-variant hover:text-destructive"
-                onClick={remove}
-                disabled={busy}
-              >
-                <Trash2 className="size-4" />
-              </Button>
+                icon={<Trash2 className="size-4" />}
+                className="rounded-full text-on-surface-variant hover:text-error hover:bg-error/10"
+                consequences={
+                  <>
+                    <li className="flex items-center gap-2">
+                      <Trash2 className="size-3.5 shrink-0" />
+                      Every question in this quiz is deleted with it
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <BarChart3 className="size-3.5 shrink-0" />
+                      {(stats?.attemptsCount ?? 0)} student attempt
+                      {(stats?.attemptsCount ?? 0) === 1 ? "" : "s"} and all
+                      recorded scores are lost
+                    </li>
+                  </>
+                }
+                onConfirm={remove}
+              />
             </div>
           </div>
         </CardContent>

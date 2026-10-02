@@ -36,6 +36,8 @@ export const user = pgTable("user", {
   role: text("role").default("student").notNull(),
   banned: boolean("banned").default(false).notNull(),
   mustChangePassword: boolean("must_change_password").default(false).notNull(),
+  /** Permanent unique 5-digit student number, printed on official documents. */
+  rollNumber: text("roll_number"),
 });
 
 export const session = pgTable(
@@ -1482,6 +1484,75 @@ export const submissions = pgTable(
   ],
 );
 
+/**
+ * A fee receipt for one student, one course and one billing period. Both the
+ * original fee and the amount actually paid are stored, so a student who pays
+ * less than the standard fee is recorded accurately and the slip can show the
+ * difference.
+ */
+export const feeSlips = pgTable(
+  "fee_slips",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    studentId: text("student_id").notNull(),
+    courseId: uuid("course_id")
+      .notNull()
+      .references(() => courses.id, { onDelete: "cascade" }),
+    period: text("period").notNull(),
+    /** Official auto-generated receipt number, e.g. RST/FV/001. */
+    slipReference: text("slip_reference").notNull(),
+    /** Why the paid amount differs from the original fee. */
+    adjustmentReason: text("adjustment_reason"),
+    originalFee: numeric("original_fee", { precision: 12, scale: 2 }).notNull(),
+    amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }).notNull(),
+    currency: text("currency").notNull().default("PKR"),
+    method: text("method").notNull().default("cash"),
+    reference: text("reference"),
+    paidAt: timestamp("paid_at", { withTimezone: true }).notNull().defaultNow(),
+    notes: text("notes"),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("fee_slips_student_course_period_uidx").on(
+      table.courseId,
+      table.studentId,
+      table.period,
+    ),
+    index("fee_slips_student_idx").on(table.studentId),
+    index("fee_slips_course_idx").on(table.courseId),
+    index("fee_slips_org_idx").on(table.organizationId),
+    uniqueIndex("fee_slips_reference_uidx").on(
+      table.organizationId,
+      table.slipReference,
+    ),
+  ],
+);
+
+/** Per-organization counter that backs the RST/FV/000 numbering. */
+export const feeSlipCounters = pgTable("fee_slip_counters", {
+  organizationId: text("organization_id")
+    .notNull()
+    .primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  lastNumber: integer("last_number").notNull().default(0),
+});
+
+export const feeSlipsRelations = relations(feeSlips, ({ one }) => ({
+  course: one(courses, {
+    fields: [feeSlips.courseId],
+    references: [courses.id],
+  }),
+}));
+
 export const coursesRelations = relations(courses, ({ many }) => ({
   quizzes: many(quizzes),
   assignments: many(assignments),
@@ -1711,6 +1782,8 @@ export const schema = {
   assignments,
   submissions,
   assignmentAttachments,
+  feeSlips,
+  feeSlipCounters,
   gradebookEntries,
   coursesRelations,
   courseEnrollmentsRelations,
@@ -1724,4 +1797,5 @@ export const schema = {
   submissionsRelations,
   assignmentAttachmentsRelations,
   gradebookEntriesRelations,
+  feeSlipsRelations,
 };

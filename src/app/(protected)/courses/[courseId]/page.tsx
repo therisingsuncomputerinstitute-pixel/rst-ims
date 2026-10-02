@@ -23,10 +23,12 @@ import {
   TriangleAlert,
   Library,
   Link2,
+  Paperclip,
   Download,
   Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -489,19 +491,23 @@ function ItemCard({
                 Edit
               </Button>
             </Link>
-            <Button
-              variant="ghost"
+            <ConfirmDelete
+              what={type === "quiz" ? "quiz" : "assignment"}
+              itemName={title || (type === "quiz" ? "this quiz" : "this assignment")}
               size="icon"
-              className="rounded-full text-on-surface-variant hover:text-destructive"
-              onClick={remove}
-              disabled={busy === `del-${type}-${itemId}`}
-            >
-              {busy === `del-${type}-${itemId}` ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Trash2 className="size-4" />
-              )}
-            </Button>
+              icon={<Trash2 className="size-4" />}
+              className="rounded-full text-on-surface-variant hover:text-error hover:bg-error/10"
+              consequences={
+                <li className="flex items-center gap-2">
+                  <Trash2 className="size-3.5 shrink-0" />
+                  {type === "quiz"
+                    ? "All of its questions and every student attempt are deleted with it"
+                    : "The assignment, its attachments and every submission are deleted with it"}
+                </li>
+              }
+              onConfirm={remove}
+            />
+
           </>
         )}
       </div>
@@ -829,19 +835,21 @@ function ResourcesTab({
                     >
                       {r.isPublished ? "Unpublish" : "Publish"}
                     </Button>
-                    <Button
-                      variant="ghost"
+                    <ConfirmDelete
+                      what="resource"
+                      itemName={r.title}
                       size="icon"
-                      className="rounded-full text-on-surface-variant hover:text-destructive"
-                      onClick={() => remove(r)}
-                      disabled={busy === `del-${r.id}`}
-                    >
-                      {busy === `del-${r.id}` ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="size-4" />
-                      )}
-                    </Button>
+                      icon={<Trash2 className="size-4" />}
+                      className="rounded-full text-on-surface-variant hover:text-error hover:bg-error/10"
+                      consequences={
+                        <li className="flex items-center gap-2">
+                          <Paperclip className="size-3.5 shrink-0" />
+                          The uploaded file is removed from storage and cannot be recovered
+                        </li>
+                      }
+                      onConfirm={() => remove(r)}
+                    />
+
                   </>
                 ) : (
                   <Badge variant="secondary" className="rounded-full">
@@ -1143,15 +1151,26 @@ function StudentsTab({
                     </p>
                   </div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="rounded-full text-on-surface-variant hover:text-destructive"
-                  onClick={() => removeEnrol(e.id)}
-                  disabled={busy}
-                >
-                  Remove
-                </Button>
+                <ConfirmDelete
+                  what="enrollment"
+                  itemName={e.name}
+                  trigger="Remove"
+                  className="rounded-full text-on-surface-variant hover:text-error hover:bg-error/10"
+                  consequences={
+                    <>
+                      <li className="flex items-center gap-2">
+                        <Users className="size-3.5 shrink-0" />
+                        {e.name} loses access to this course immediately
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <TriangleAlert className="size-3.5 shrink-0" />
+                        Grades and attendance recorded for this course are kept, but the
+                        student can no longer see the course
+                      </li>
+                    </>
+                  }
+                  onConfirm={() => removeEnrol(e.id)}
+                />
               </div>
             ))}
           </div>

@@ -9,6 +9,7 @@ import {
   IconSettings,
   IconUsers,
   IconCalendarCheck,
+  IconWallet,
 } from "@tabler/icons-react";
 import {
   Sidebar,
@@ -38,6 +39,7 @@ const navMain = [
   { title: "Assignments", url: "/assignments", icon: IconFileText },
   { title: "Grades", url: "/grades", icon: IconReportAnalytics },
   { title: "Attendance", url: "/attendance", icon: IconCalendarCheck },
+  { title: "Payments", url: "/payments", icon: IconWallet },
   { title: "Users", url: "/users", icon: IconUsers },
   { title: "Settings", url: "/settings", icon: IconSettings },
 ];
