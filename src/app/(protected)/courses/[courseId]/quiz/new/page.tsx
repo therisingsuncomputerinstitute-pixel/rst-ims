@@ -23,6 +23,7 @@ export default function NewQuizPage() {
     instructions: "",
     durationMinutes: 15,
     dueAt: "",
+    accessKey: "",
   });
   const [questions, setQuestions] = useState<QuestionDraft[]>([]);
   const [saving, setSaving] = useState(false);
@@ -46,6 +47,7 @@ export default function NewQuizPage() {
         instructions: form.instructions,
         durationMinutes: form.durationMinutes,
         dueAt: form.dueAt || null,
+        accessKey: form.accessKey,
         questions: normalizeQuestions(valid),
       });
       toast.success("Quiz created");

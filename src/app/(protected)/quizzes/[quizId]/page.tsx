@@ -19,10 +19,23 @@ import {
   Trophy,
   Users,
   BarChart3,
+  ShieldAlert,
+  Maximize2,
+  MousePointerClick,
+  VideoOff,
+  KeyRound,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ConfirmDelete } from "@/components/ums/confirm-delete";
+import {
+  FullscreenGuard,
+  ProctorBadge,
+  ProctorWarning,
+  useQuizProctor,
+} from "@/components/ums/quiz-lockdown";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -35,6 +48,7 @@ import {
   getMyAttempt,
   startQuizAttempt,
   submitQuizAttempt,
+  recordQuizViolation,
   listQuizAttempts,
   toggleQuizPublish,
   deleteQuiz,
@@ -119,9 +133,16 @@ export default function QuizPage() {
       {mode === "intro" && (
         <IntroView
           quiz={quiz}
-          onStart={async () => {
+          onStart={async (key?: string) => {
+            // Enter full screen here: it must happen inside the click gesture,
+            // and this is the only place the student clicks "Start".
+            if (!document.fullscreenElement) {
+              document.documentElement
+                .requestFullscreen({ navigationUI: "hide" })
+                .catch(() => {});
+            }
             try {
-              const res = await startQuizAttempt(params.quizId);
+              const res = await startQuizAttempt(params.quizId, key);
               setAttempt(res.attempt as any);
               setMode("taking");
             } catch (e: any) {
@@ -148,7 +169,17 @@ export default function QuizPage() {
   );
 }
 
-function IntroView({ quiz, onStart }: { quiz: QuizData; onStart: () => void }) {
+function IntroView({
+  quiz,
+  onStart,
+}: {
+  quiz: QuizData;
+  onStart: (key?: string) => void;
+}) {
+  const requiresKey = Boolean((quiz as any).requiresKey);
+  const [key, setKey] = useState("");
+  const keyMissing = requiresKey && !key.trim();
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -194,16 +225,60 @@ function IntroView({ quiz, onStart }: { quiz: QuizData; onStart: () => void }) {
               {(quiz as any).instructions}
             </div>
           )}
-          <div className="mt-8">
+          <div className="mt-6 rounded-2xl border border-primary/25 bg-primary/5 p-4 text-sm">
+            <p className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-primary">
+              <ShieldAlert className="size-3.5" /> Exam rules
+            </p>
+            <ul className="mt-2 space-y-1.5 text-on-surface-variant">
+              <li className="flex items-start gap-2">
+                <Maximize2 className="size-3.5 mt-0.5 shrink-0 text-primary" />
+                The quiz opens in full screen and must stay there.
+              </li>
+              <li className="flex items-start gap-2">
+                <MousePointerClick className="size-3.5 mt-0.5 shrink-0 text-primary" />
+                Only the mouse works — the keyboard is disabled.
+              </li>
+              <li className="flex items-start gap-2">
+                <Eye className="size-3.5 mt-0.5 shrink-0 text-primary" />
+                Switching tabs or windows is detected and recorded.
+              </li>
+              <li className="flex items-start gap-2">
+                <VideoOff className="size-3.5 mt-0.5 shrink-0 text-primary" />
+                No camera or microphone is used.
+              </li>
+            </ul>
+          </div>
+          {requiresKey && (
+            <div className="mt-6 rounded-2xl border border-outline-variant/60 bg-surface-container-highest/40 p-4">
+              <Label htmlFor="quiz-key" className="flex items-center gap-2 text-sm">
+                <KeyRound className="size-4 text-primary" /> Access key
+              </Label>
+              <Input
+                id="quiz-key"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="Enter the key given by your instructor"
+                autoComplete="off"
+                className="mt-2"
+              />
+              <p className="text-[11px] text-on-surface-variant mt-2">
+                Your instructor will give you this key. Ask them if you do not have it.
+              </p>
+            </div>
+          )}
+          <div className="mt-6">
             <Button
               size="lg"
               className="rounded-full px-8"
-              onClick={onStart}
+              onClick={() => onStart(key)}
+              disabled={keyMissing}
             >
               <Play className="size-4 mr-2" /> Start attempt
             </Button>
             <p className="text-[11px] text-on-surface-variant mt-3">
-              You can only attempt this quiz once. The timer starts as soon as you begin.
+              {keyMissing
+                ? "Enter the access key to begin."
+                : "You can only attempt this quiz once. The timer starts as soon as you begin."}
             </p>
           </div>
         </CardContent>
@@ -245,6 +320,9 @@ function AttemptView({
     (quiz as any).durationMinutes * 60,
   );
   const submittedRef = useRef(false);
+  const proctor = useQuizProctor(true, () => {
+    recordQuizViolation(attempt.id).catch(() => {});
+  });
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -320,6 +398,7 @@ function AttemptView({
           </p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <ProctorBadge count={proctor.violationCount} />
           <p className="text-xs text-on-surface-variant hidden sm:block">
             {answered}/{questions.length} answered
           </p>
@@ -433,6 +512,17 @@ function AttemptView({
           Submit quiz
         </Button>
       </div>
+
+      {!proctor.isFullscreen && (
+        <FullscreenGuard onResume={proctor.requestFullscreen} />
+      )}
+      {proctor.warning && (
+        <ProctorWarning
+          violation={proctor.warning}
+          count={proctor.violationCount}
+          onDismiss={proctor.dismissWarning}
+        />
+      )}
     </motion.div>
   );
 }
@@ -798,6 +888,12 @@ function AdminQuizView({
                       <p className="text-xs text-on-surface-variant">{a.studentEmail}</p>
                     </div>
                     <div className="flex items-center gap-3">
+                      {a.violations > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-error/15 px-2.5 py-1 text-[11px] font-bold text-error">
+                          <ShieldAlert className="size-3" />
+                          {a.violations}
+                        </span>
+                      )}
                       <span
                         className={cn(
                           "text-sm font-black",

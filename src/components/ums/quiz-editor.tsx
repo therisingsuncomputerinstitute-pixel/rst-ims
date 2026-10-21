@@ -31,6 +31,7 @@ export type QuizFormState = {
   instructions: string;
   durationMinutes: number;
   dueAt: string;
+  accessKey: string;
 };
 
 export type QuestionDraft = {
@@ -253,6 +254,21 @@ export function QuizEditor({
               placeholder="Rules and notes shown on the intro screen before the attempt."
               className="mt-1.5 min-h-20"
             />
+          </div>
+          <div>
+            <Label htmlFor="ql-key">Access key (optional)</Label>
+            <Input
+              id="ql-key"
+              value={form.accessKey}
+              onChange={set("accessKey")}
+              placeholder="e.g. CIT-2026"
+              autoComplete="off"
+              className="mt-1.5"
+            />
+            <p className="text-xs text-on-surface-variant mt-1.5">
+              Students must type this key to start the quiz. Leave empty for an
+              open quiz.
+            </p>
           </div>
         </CardContent>
       </Card>

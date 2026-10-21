@@ -734,6 +734,7 @@ export async function createQuiz(input: {
   instructions?: string;
   durationMinutes?: number;
   dueAt?: string | null;
+  accessKey?: string;
   questions: QuizQuestionInput[];
 }) {
   await requireAdmin();
@@ -754,6 +755,7 @@ export async function createQuiz(input: {
       title: input.title.trim(),
       description: input.description?.trim() || null,
       instructions: input.instructions?.trim() || null,
+      accessKey: input.accessKey?.trim() || null,
       durationMinutes: input.durationMinutes ?? 15,
       totalQuestions: input.questions.length,
       maxScore,
@@ -793,13 +795,21 @@ export async function getQuiz(quizId: string) {
   if (!isAdmin && !isEnrolled) throw new Error("You are not enrolled in this course.");
   if (!isAdmin && !quiz.isPublished) throw new Error("Quiz is not available yet.");
 
+  // The access key is a secret between the admin and the students: tell the
+  // student only whether one is required, never what it is.
+  const requiresKey = Boolean(quiz.accessKey);
+  const payload = { ...quiz, requiresKey } as Omit<typeof quiz, "accessKey"> & {
+    accessKey?: string | null;
+    requiresKey: boolean;
+  };
   if (!isAdmin) {
-    quiz.questions = (quiz.questions as any[]).map(
+    delete payload.accessKey;
+    payload.questions = (quiz.questions as any[]).map(
       ({ correctAnswer, ...rest }) => rest,
     );
   }
 
-  return quiz;
+  return payload;
 }
 
 export async function listQuizAttempts(quizId: string) {
@@ -813,6 +823,7 @@ export async function listQuizAttempts(quizId: string) {
       scoreEarned: quizAttempts.scoreEarned,
       scoreTotal: quizAttempts.scoreTotal,
       status: quizAttempts.status,
+      violations: quizAttempts.violations,
       startedAt: quizAttempts.startedAt,
       submittedAt: quizAttempts.submittedAt,
     })
@@ -924,6 +935,7 @@ export async function updateQuiz(
     durationMinutes: number;
     dueAt: string | null;
     isPublished: boolean;
+    accessKey?: string | null;
     questions: QuizQuestionInput[];
   }>,
 ) {
@@ -939,6 +951,11 @@ export async function updateQuiz(
       title: input.title?.trim(),
       description: input.description?.trim() || null,
       instructions: input.instructions?.trim() || null,
+      // undefined leaves the existing key untouched; empty string clears it.
+      accessKey:
+        input.accessKey === undefined
+          ? undefined
+          : (input.accessKey ?? "").trim() || null,
       durationMinutes: input.durationMinutes,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
       isPublished: input.isPublished,
@@ -982,7 +999,7 @@ function stripAnswers(questions: any[]) {
   return questions.map(({ correctAnswer, ...rest }) => rest);
 }
 
-export async function startQuizAttempt(quizId: string) {
+export async function startQuizAttempt(quizId: string, accessKey?: string) {
   const u = await requireUser();
   const quiz = await db.query.quizzes.findFirst({
     where: (q, { eq: e }) => e(q.id, quizId),
@@ -997,6 +1014,13 @@ export async function startQuizAttempt(quizId: string) {
     if (!enrolled) throw new Error("You are not enrolled in this course.");
     if (quiz.dueAt && quiz.dueAt < new Date()) {
       throw new Error("This quiz is past its due date.");
+    }
+    // A quiz may be locked behind an access key the admin shares with students.
+    if (quiz.accessKey) {
+      const provided = (accessKey ?? "").trim().toLowerCase();
+      if (!provided || provided !== quiz.accessKey.trim().toLowerCase()) {
+        throw new Error("Incorrect access key. Ask your instructor for the key.");
+      }
     }
   }
 
@@ -1089,6 +1113,31 @@ export async function getMyAttempt(quizId: string) {
     where: (a, { eq: e }) =>
       and(e(a.quizId, quizId), e(a.studentId, u.id)),
   });
+}
+
+/**
+ * Records one exam-rule breach (tab switch, full-screen exit, keyboard use)
+ * against an in-progress attempt. Only the student who owns the attempt can
+ * report a violation, and only while it is still in progress.
+ */
+export async function recordQuizViolation(attemptId: string) {
+  const u = await requireUser();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, studentId: true, status: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.studentId !== u.id && u.role !== "admin") {
+    throw new Error("Unauthorized.");
+  }
+  if (attempt.status === "submitted") return { ok: true, skipped: true };
+
+  const [updated] = await db
+    .update(quizAttempts)
+    .set({ violations: sql`${quizAttempts.violations} + 1` })
+    .where(eq(quizAttempts.id, attemptId))
+    .returning({ violations: quizAttempts.violations });
+  return { ok: true, violations: updated?.violations ?? 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -2455,7 +2504,12 @@ export async function getStudentDashboardData(): Promise<DashboardData> {
   const courseIds = myCourses.map((c) => c.id);
   const upcomingQuizzes = courseIds.length
     ? await db
-        .select()
+        .select({
+          id: quizzes.id,
+          courseId: quizzes.courseId,
+          title: quizzes.title,
+          dueAt: quizzes.dueAt,
+        })
         .from(quizzes)
         .where(
           and(
@@ -2698,6 +2752,7 @@ export type MyQuizItem = {
   maxScore: number;
   dueAt: Date | null;
   isPublished: boolean;
+  requiresKey: boolean;
   status: "not_attempted" | "in_progress" | "submitted";
   scoreEarned: number | null;
   scoreTotal: number | null;
@@ -2764,6 +2819,7 @@ export async function listMyQuizzes(): Promise<MyQuizItem[]> {
       maxScore: r.maxScore ?? 0,
       dueAt: r.dueAt,
       isPublished: r.isPublished,
+      requiresKey: Boolean(r.accessKey),
       status,
       scoreEarned: attempt?.scoreEarned ?? null,
       scoreTotal: attempt?.scoreTotal ?? null,
@@ -2868,7 +2924,22 @@ export async function getUpcomingForCourse(courseId: string) {
   }
   const [quizList, assignmentList] = await Promise.all([
     db
-      .select()
+      .select({
+        id: quizzes.id,
+        courseId: quizzes.courseId,
+        organizationId: quizzes.organizationId,
+        title: quizzes.title,
+        description: quizzes.description,
+        instructions: quizzes.instructions,
+        durationMinutes: quizzes.durationMinutes,
+        totalQuestions: quizzes.totalQuestions,
+        maxScore: quizzes.maxScore,
+        isPublished: quizzes.isPublished,
+        dueAt: quizzes.dueAt,
+        createdAt: quizzes.createdAt,
+        updatedAt: quizzes.updatedAt,
+        requiresKey: sql<boolean>`(${quizzes.accessKey} is not null)`,
+      })
       .from(quizzes)
       .where(
         and(

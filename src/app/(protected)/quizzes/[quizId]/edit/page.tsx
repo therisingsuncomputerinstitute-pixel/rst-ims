@@ -41,6 +41,7 @@ export default function EditQuizPage() {
           instructions: q.instructions || "",
           durationMinutes: q.durationMinutes,
           dueAt: toInputDate(q.dueAt),
+          accessKey: q.accessKey || "",
         });
         setQuestions(
           (q.questions as any[]).map((qq) => ({
@@ -81,6 +82,7 @@ export default function EditQuizPage() {
         instructions: form.instructions,
         durationMinutes: form.durationMinutes,
         dueAt: form.dueAt || null,
+        accessKey: form.accessKey,
         questions: normalizeQuestions(valid),
       });
       toast.success("Quiz updated");

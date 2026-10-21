@@ -1250,6 +1250,7 @@ export const quizzes = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     instructions: text("instructions"),
+    accessKey: text("access_key"),
     durationMinutes: integer("duration_minutes").default(15),
     totalQuestions: integer("total_questions").default(0),
     maxScore: real("max_score").notNull().default(0),
@@ -1304,6 +1305,7 @@ export const quizAttempts = pgTable(
     status: text("status", { enum: ["in_progress", "submitted"] })
       .default("in_progress")
       .notNull(),
+    violations: integer("violations").notNull().default(0),
     startedAt: timestamp("started_at").defaultNow().notNull(),
     submittedAt: timestamp("submitted_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
