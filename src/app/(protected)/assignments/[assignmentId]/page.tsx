@@ -165,7 +165,7 @@ function StudentOrAdmin({
   if (!data) return null;
 
   if (isAdmin) {
-    const subs = (data as any).submissions;
+    const subs = ((data as any).submissions ?? []) as any[];
     return (
       <AdminAssignmentView assignmentId={assignmentId} assignment={data.assignment} submissions={subs} reload={reload} />
     );
@@ -173,7 +173,7 @@ function StudentOrAdmin({
   return (
     <StudentAssignmentView
       assignment={data.assignment}
-      mySubmission={(data as any).mySubmission}
+      mySubmission={(data as any).mySubmission ?? null}
       reload={reload}
     />
   );
@@ -517,11 +517,6 @@ function AdminAssignmentView({
             <Link href={`/assignments/${assignmentId}/edit`}>
               <Button variant="outline" size="sm" className="rounded-full">
                 Edit assignment
-              </Button>
-            </Link>
-            <Link href={`/submissions`}>
-              <Button variant="outline" size="sm" className="rounded-full">
-                View all submissions
               </Button>
             </Link>
           </div>

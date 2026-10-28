@@ -92,6 +92,9 @@ them **before** they can attempt anything.
    - **Due date** (optional)
    - **Description** — short summary shown to students
    - **Instructions** — rules/notes shown on the intro screen
+   - **Access key** — optional private key the student must enter on the intro
+     screen to start the attempt (admins bypass; the key is never exposed to
+     students through list/detail responses)
 3. Under **Questions**, click **Add question** and fill each:
    - **Prompt** (required)
    - **Points** (default 1; total points shown at the top)
@@ -102,7 +105,12 @@ them **before** they can attempt anything.
 > Tips: you can delete a question with the trash icon. The quiz is NOT visible to
 > students until you **Publish** it (right top of the quiz page).
 
-5. **Publish** to make it live. Students can now take it (once per student).
+5. **Publish** to make it live. Students can now take it (once per student, and
+   only with the **access key** if one was set).
+
+> Changing a question's **correct answer** after attempts exist re-grades those
+> attempts from the stored answers — the earned marks are recomputed, nothing is
+> lost, only the answer key changes.
 
 ### 2.4 Check quiz results
 
@@ -220,6 +228,33 @@ This is the quickest way to onboard a whole class.
 
 1. **Settings** (`/settings`) — update your profile (name, current password, change password).
 
+### 2.12 Fee / payment slips (admin)
+
+**Payments** (`/payments`) is the admin billing console.
+
+1. Open **Payments** → **New fee slip**.
+2. Pick **Student**, **Course** and the **Billing period** (month, e.g. `2026-10`).
+3. Enter the **Original fee** and the **Amount paid**.
+4. If the student paid **less** than the original fee, a **Reason** is required and
+   picked from the chips: Scholarship, Fee waived, Sibling discount, Guardian
+   concession, Staff / family rate, Partial month, Approved reduction.
+5. **Create slip** → the receipt number is auto-generated (`RST/FV/###`) from the
+   `fee_slip_counters` sequence and the slip is persisted. Re-adding the same
+   `(course, student, period)` updates that slip instead of duplicating it.
+6. **Download slip** renders the PDF (orange theme, institute letterhead, full
+   course name wrapped, original vs paid amounts, adjustment reason when
+   underpaid) and signs it with **Shuja Uz Zaman** and **Muhammad Hamza Sheikh**
+   (placeholder PNGs in `public/signatures/` until real ones are dropped in).
+7. Slips are unique per `(course_id, student_id, period)`.
+
+### 2.13 Delete confirmations
+
+Every destructive action — fee slips, quizzes, courses, assignments, quiz
+questions/attempts, submission files, attachments, profile photo and the account
+itself — opens the shared **ConfirmDelete** dialog (AlertDialog) with the exact
+objects that will be destroyed. Account deletion additionally requires typing
+`DELETE`. Server actions re-check permissions, so the guards cannot be skipped.
+
 ---
 
 ## 3. Student flows
@@ -257,11 +292,21 @@ This is the quickest way to onboard a whole class.
 1. On your **Dashboard** (`/dashboard`) open **My Courses**, or go to **Courses**
    and open a course you're enrolled in.
 2. Click the published quiz → **Start attempt** (intro screen shows duration, number
-   of questions, total points, and the instructions written by the admin).
-3. ⚠️ **You can only attempt each quiz once.** The timer starts the moment you begin.
-4. Answer each question and **Submit quiz**.
-5. The quiz is **auto-graded** immediately → you see your **score** and a per-question
+   of questions, total points, the instructions written by the admin, and — when the
+   admin set one — the **access key** field).
+3. 🔑 **Access key** — if the admin set one on the quiz, enter it on the intro
+   screen to start. Wrong key means no attempt is created.
+4. ⚠️ **You can only attempt each quiz once.** The timer starts the moment you begin.
+5. Answer each question and **Submit quiz**.
+6. The quiz is **auto-graded** immediately → you see your **score** and a per-question
    review (right/wrong with correct answers).
+
+> **Proctoring** (locked quizzes): leaving fullscreen / switching to another tab /
+> using keyboard shortcuts or copy-paste triggers a **violation**. After
+> **3 warnings** the attempt is **paused** (the timer keeps running) until the
+> admin clears it; when the warning budget reaches **0** the attempt is
+> **terminated** with a score of **0**. The admin sees the violation count in the
+> attempts list and can **pause** / **terminate** from there.
 
 ### 3.5 Submit an assignment
 
@@ -282,6 +327,15 @@ This is the quickest way to onboard a whole class.
   max points and percentage.
 - Your **Dashboard** (`/dashboard`) also shows **Recent grades** and a **Score trend**
   chart, plus a **Due soon** alert for anything due within 48 hours.
+
+### 3.7 Fee slips (student view)
+
+- **Payments** (`/payments`) lists **only your own slips**.
+- Each slip shows the course, period, original fee, amount paid, adjustment reason
+  (when the paid amount was less) and the receipt number (`RST/FV/###`), plus a
+  **Download slip** button that fetches the PDF via the RBAC-gated
+  `/api/fees/slip/<id>` endpoint.
+- Students can never see or download another student's slip.
 
 ---
 
@@ -367,3 +421,11 @@ This is the quickest way to onboard a whole class.
 - **Dev server**: `npm run dev`; next dev runs the custom server (`proxy.ts`), so changes
   to `.env` require restarting the server process.
 - **Build/typecheck**: `npm run build` and `npx tsc --noEmit`.
+- **Maintenance mode** (`maintenance_mode` singleton table; created with
+  `CREATE TABLE IF NOT EXISTS public.maintenance_mode (...)`): while `enabled` is
+  true the proxy (`src/proxy.ts`) redirects every protected route to the custom
+  `/maintenance` page (message from the row, falling back to a generic notice).
+  The flag can be flipped from the admin console (`POST /api/maintenance`) or from
+  the CLI script: `npx tsx maintenance-toggle.ts --on` (add `--message "..."` to
+  set the notice) and `npx tsx maintenance-toggle.ts --off` to resume. Sending
+  `{ "enabled": false }` through the API resumes the same way.

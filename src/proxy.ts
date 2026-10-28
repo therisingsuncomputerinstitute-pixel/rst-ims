@@ -67,6 +67,29 @@ export async function proxy(request: NextRequest) {
     if (isAuthRoute) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
+
+    // Maintenance mode: while the portal flag is on, protected routes bounce
+    // to the custom /maintenance page.
+    if (isProtectedRoute && pathname !== "/maintenance") {
+      try {
+        const statusRes = await fetch(
+          `${request.nextUrl.origin}/api/maintenance/status`,
+          {
+            headers: {
+              cookie: request.headers.get("cookie") || "",
+            },
+          },
+        );
+        const statusData = (await statusRes.json().catch(() => ({}))) as {
+          enabled?: boolean;
+        };
+        if (statusData?.enabled) {
+          return NextResponse.redirect(new URL("/maintenance", request.url));
+        }
+      } catch {
+        // Treat a status fetch failure as "not in maintenance".
+      }
+    }
   } catch (error) {
     console.error("Proxy session fetch error:", error);
     // Fallback: If the API fetch fails for some reason, secure the protected routes

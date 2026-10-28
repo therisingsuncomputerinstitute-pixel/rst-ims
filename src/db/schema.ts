@@ -1623,6 +1623,13 @@ export const courseEnrollmentsRelations = relations(
  * data the app already stores, so only the exams and the conduct/participation
  * marks are stored here.
  */
+export const maintenanceMode = pgTable("maintenance_mode", {
+  id: boolean("id").primaryKey().default(true),
+  enabled: boolean("enabled").notNull().default(false),
+  message: text("message"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const gradebookEntries = pgTable(
   "gradebook_entries",
   {
@@ -1795,6 +1802,7 @@ export const schema = {
   assignmentAttachments,
   feeSlips,
   feeSlipCounters,
+  maintenanceMode,
   gradebookEntries,
   coursesRelations,
   courseEnrollmentsRelations,

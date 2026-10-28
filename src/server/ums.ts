@@ -18,6 +18,7 @@ import {
   feeSlips,
   feeSlipCounters,
   gradebookEntries,
+  maintenanceMode,
   member,
   organization,
   quizAttempts,
@@ -3933,4 +3934,46 @@ export async function setStudentPasswordByAdmin(
     .where(eq(user.id, targetUserId));
   await revokeUserSessions(targetUserId);
   return { success: true };
+}
+
+/**
+ * Maintenance mode state. While `enabled` is true the whole portal is moved to
+ * the /maintenance page (enforced in src/proxy.ts). Flipping it back via the
+ * same setter resumes the portal.
+ */
+export async function getMaintenanceState() {
+  const rows = await db
+    .select({
+      enabled: maintenanceMode.enabled,
+      message: maintenanceMode.message,
+    })
+    .from(maintenanceMode)
+    .limit(1);
+  const row = rows[0];
+  return {
+    enabled: row?.enabled ?? false,
+    message: row?.message ?? null,
+  };
+}
+
+export async function setMaintenanceMode(input: {
+  enabled: boolean;
+  message?: string;
+}) {
+  const admin = await requireAdmin();
+  const message = (input.message ?? "").trim() || null;
+  await db
+    .insert(maintenanceMode)
+    .values({
+      id: true,
+      enabled: input.enabled,
+      message,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: maintenanceMode.id,
+      set: { enabled: input.enabled, message, updatedAt: new Date() },
+    });
+  const state = await getMaintenanceState();
+  return state;
 }
