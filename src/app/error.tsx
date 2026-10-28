@@ -36,6 +36,11 @@ export default function Error({
             <span className="text-xs font-mono opacity-50 mt-4 block">
               {error.digest || "Internal Logic Exception"}
             </span>
+            {error?.message ? (
+              <span className="block text-xs opacity-60 mt-2 break-words">
+                {error.message}
+              </span>
+            ) : null}
           </p>
         </div>
 
