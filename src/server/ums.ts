@@ -35,6 +35,7 @@ import {
   type GradebookResult,
 } from "@/lib/gradebook";
 import { parseStudentList } from "@/lib/student-list";
+import { setCredentialPassword, revokeUserSessions } from "@/server/user-accounts";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Auth helpers
@@ -826,6 +827,10 @@ export async function listQuizAttempts(quizId: string) {
       violations: quizAttempts.violations,
       startedAt: quizAttempts.startedAt,
       submittedAt: quizAttempts.submittedAt,
+      pausedAt: quizAttempts.pausedAt,
+      pauseCount: quizAttempts.pauseCount,
+      warningLimit: quizAttempts.warningLimit,
+      terminatedByAdmin: quizAttempts.terminatedByAdmin,
     })
     .from(quizAttempts)
     .innerJoin(user, eq(quizAttempts.studentId, user.id))
@@ -967,6 +972,8 @@ export async function updateQuiz(
   if (input.questions) {
     await db.delete(quizQuestions).where(eq(quizQuestions.quizId, quizId));
     await insertQuestions(quizId, input.questions);
+    // Re-score all existing submitted attempts so existing scores reflect the new answers.
+    await reScoreQuizAttempts(quizId);
   }
 
   return { success: true };
@@ -1116,6 +1123,153 @@ export async function getMyAttempt(quizId: string) {
 }
 
 /**
+ * Re-scores every submitted attempt for a quiz after its questions/answers
+ * have changed. Existing answers are preserved; only the score and per-answer
+ * isCorrect/correctText flags are recomputed. Call this from updateQuiz.
+ */
+export async function reScoreQuizAttempts(quizId: string) {
+  await requireAdmin();
+  const questions = await db.query.quizQuestions.findMany({
+    where: (q, { eq: e }) => e(q.quizId, quizId),
+  });
+  const attempts = await db.query.quizAttempts.findMany({
+    where: (a, { eq: e }) => and(e(a.quizId, quizId), e(a.status, "submitted")),
+  });
+
+  for (const attempt of attempts) {
+    const oldAnswers = (attempt.answers as any[]) ?? [];
+    let earned = 0;
+    let total = 0;
+    const normalized = questions.map((q) => {
+      const existing = oldAnswers.find((a: any) => a.questionId === q.id);
+      const correct = Array.isArray(q.correctAnswer) ? (q.correctAnswer as string[]) : [];
+      const selected: string[] = existing?.selected ?? [];
+      const isCorrect =
+        correct.length === selected.length && correct.every((c) => selected.includes(c));
+      const textOf = (ids: string[]) =>
+        (q.options as { id: string; text: string }[])?.length
+          ? (q.options as { id: string; text: string }[])
+              .filter((o) => ids.includes(o.id))
+              .map((o) => o.text)
+              .join(", ")
+          : ids.join(", ");
+      total += q.points;
+      if (isCorrect) earned += q.points;
+      return {
+        questionId: q.id,
+        questionText: existing?.questionText ?? q.prompt,
+        selected,
+        selectedText: textOf(selected),
+        text: existing?.text ?? null,
+        correct,
+        correctText: textOf(correct),
+        points: q.points,
+        isCorrect,
+      };
+    });
+
+    await db
+      .update(quizAttempts)
+      .set({ answers: normalized, scoreEarned: earned, scoreTotal: total })
+      .where(eq(quizAttempts.id, attempt.id));
+  }
+  return { rescored: attempts.length };
+}
+
+/**
+ * Admin pauses a student's in-progress quiz attempt.
+ * The timer keeps running on the client side — only the student is blocked from
+ * submitting until the admin resumes them.
+ * Reduces the warning limit for the NEXT session by 1 (min 0).
+ */
+export async function pauseStudentQuiz(attemptId: string) {
+  await requireAdmin();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, status: true, pauseCount: true, warningLimit: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.status === "submitted") throw new Error("Cannot pause a submitted attempt.");
+
+  const newPauseCount = (attempt.pauseCount ?? 0) + 1;
+  const newWarningLimit = Math.max(0, (attempt.warningLimit ?? 3) - 1);
+
+  await db
+    .update(quizAttempts)
+    .set({ pausedAt: new Date(), pauseCount: newPauseCount, warningLimit: newWarningLimit })
+    .where(eq(quizAttempts.id, attemptId));
+  return { ok: true, pauseCount: newPauseCount, warningLimit: newWarningLimit };
+}
+
+/**
+ * Admin resumes a paused student quiz.
+ */
+export async function resumeStudentQuiz(attemptId: string) {
+  await requireAdmin();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, status: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.status === "submitted") throw new Error("Attempt already submitted.");
+
+  await db
+    .update(quizAttempts)
+    .set({ pausedAt: null })
+    .where(eq(quizAttempts.id, attemptId));
+  return { ok: true };
+}
+
+/**
+ * Admin terminates a student quiz (too many violations at warning_limit=0).
+ * Forces score to 0 and status to submitted.
+ */
+export async function terminateStudentQuiz(attemptId: string) {
+  await requireAdmin();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, status: true, quizId: true, scoreTotal: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.status === "submitted") throw new Error("Attempt already submitted.");
+
+  const questions = await db.query.quizQuestions.findMany({
+    where: (q, { eq: e }) => e(q.quizId, attempt.quizId),
+    columns: { points: true },
+  });
+  const total = questions.reduce((s, q) => s + q.points, 0);
+
+  await db
+    .update(quizAttempts)
+    .set({
+      scoreEarned: 0,
+      scoreTotal: total,
+      status: "submitted",
+      submittedAt: new Date(),
+      pausedAt: null,
+      terminatedByAdmin: true,
+    })
+    .where(eq(quizAttempts.id, attemptId));
+  return { ok: true };
+}
+
+/**
+ * Returns minimal status for a student's own attempt (used for polling paused state).
+ */
+export async function getMyAttemptStatus(attemptId: string) {
+  const u = await requireUser();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, studentId: true, status: true, pausedAt: true, warningLimit: true, terminatedByAdmin: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.studentId !== u.id && u.role !== "admin") {
+    throw new Error("Unauthorized.");
+  }
+  return attempt;
+}
+
+/**
  * Records one exam-rule breach (tab switch, full-screen exit, keyboard use)
  * against an in-progress attempt. Only the student who owns the attempt can
  * report a violation, and only while it is still in progress.
@@ -1124,21 +1278,59 @@ export async function recordQuizViolation(attemptId: string) {
   const u = await requireUser();
   const attempt = await db.query.quizAttempts.findFirst({
     where: (a, { eq: e }) => e(a.id, attemptId),
-    columns: { id: true, studentId: true, status: true },
+    columns: { id: true, studentId: true, status: true, violations: true, warningLimit: true, pausedAt: true, quizId: true, pauseCount: true },
   });
   if (!attempt) throw new Error("Attempt not found.");
   if (attempt.studentId !== u.id && u.role !== "admin") {
     throw new Error("Unauthorized.");
   }
   if (attempt.status === "submitted") return { ok: true, skipped: true };
+  // Don't count violations while paused.
+  if (attempt.pausedAt) return { ok: true, skipped: true, paused: true };
 
   const [updated] = await db
     .update(quizAttempts)
     .set({ violations: sql`${quizAttempts.violations} + 1` })
     .where(eq(quizAttempts.id, attemptId))
-    .returning({ violations: quizAttempts.violations });
-  return { ok: true, violations: updated?.violations ?? 0 };
+    .returning({ violations: quizAttempts.violations, warningLimit: quizAttempts.warningLimit });
+
+  const violations = updated?.violations ?? 0;
+  const warningLimit = updated?.warningLimit ?? 3;
+
+  // Auto-pause when violations reach the warning limit (and limit > 0).
+  // If warningLimit is 0, terminate immediately.
+  if (warningLimit === 0) {
+    const questions = await db.query.quizQuestions.findMany({
+      where: (q, { eq: e }) => e(q.quizId, attempt.quizId ?? ""),
+      columns: { points: true },
+    });
+    const total = questions.reduce((s, q) => s + q.points, 0);
+    await db
+      .update(quizAttempts)
+      .set({
+        scoreEarned: 0,
+        scoreTotal: total,
+        status: "submitted",
+        submittedAt: new Date(),
+        terminatedByAdmin: false,
+      })
+      .where(eq(quizAttempts.id, attemptId));
+    return { ok: true, violations, terminated: true };
+  }
+
+  if (violations >= warningLimit) {
+    const newPauseCount = (attempt.pauseCount ?? 0);
+    const newWarningLimit = Math.max(0, warningLimit - 1);
+    await db
+      .update(quizAttempts)
+      .set({ pausedAt: new Date(), pauseCount: newPauseCount + 1, warningLimit: newWarningLimit })
+      .where(eq(quizAttempts.id, attemptId));
+    return { ok: true, violations, autoPaused: true, warningLimit: newWarningLimit };
+  }
+
+  return { ok: true, violations, warningLimit };
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────
 // Assignments
@@ -1217,9 +1409,13 @@ export async function deleteAssignment(assignmentId: string) {
     .from(assignmentAttachments)
     .where(eq(assignmentAttachments.assignmentId, assignmentId));
   if (files.length && (await ensureBucket())) {
-    await getSupabaseServer()!
-      .storage.from(SUBMISSION_BUCKET)
-      .remove(files.map((f) => f.filePath));
+    const supabase = getSupabaseServer()!;
+    const paths = files
+      .map((f) => f.filePath)
+      .filter((p): p is string => Boolean(p));
+    if (paths.length) {
+      await supabase.storage.from(SUBMISSION_BUCKET).remove(paths);
+    }
   }
   await db
     .delete(assignments)
@@ -1240,6 +1436,7 @@ export async function getAssignment(assignmentId: string) {
           fileName: true,
           fileSize: true,
           createdAt: true,
+          url: true,
         },
       },
     },
@@ -1334,6 +1531,11 @@ export async function submitAssignment(
   const comments = (formData.get("comments") as string | null)?.trim() || null;
   if (!file || !file.size) throw new Error("Please attach a file.");
 
+  const MAX_SUBMISSION_BYTES = 5 * 1024 * 1024;
+  if (file.size > MAX_SUBMISSION_BYTES) {
+    throw new Error("File must be 5 MB or smaller.");
+  }
+
   // Strip unsafe characters from the file name
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const filePath = `assignments/${assignmentId}/${u.id}_${Date.now()}_${safeName}`;
@@ -1360,15 +1562,21 @@ export async function submitAssignment(
       and(e(s.assignmentId, assignmentId), e(s.studentId, u.id)),
   });
 
-  // Remove previously stored file if replacing
+  // Remove previously stored file if replacing (allowed once more on resubmission)
   if (existing?.fileUrl) {
     const oldPath = extractPathFromUrl(existing.fileUrl);
     if (oldPath) {
-      await supabase.storage.from(SUBMISSION_BUCKET).remove([oldPath]);
+      try {
+        await supabase.storage.from(SUBMISSION_BUCKET).remove([oldPath]);
+      } catch {
+        /* best effort */
+      }
     }
   }
 
   const keepGrade = existing?.status === "graded";
+  const wasSubmitted = existing?.status === "submitted" || existing?.status === "graded";
+  const resubmitted = Boolean(existing && wasSubmitted);
   const values = {
     assignmentId,
     studentId: u.id,
@@ -1378,6 +1586,8 @@ export async function submitAssignment(
     fileSize: file.size,
     comments,
     status: (keepGrade ? "graded" : "submitted") as "submitted" | "graded",
+    resubmitted: resubmitted ? true : (existing?.resubmitted ?? false),
+    resubmittedAt: resubmitted ? new Date() : existing?.resubmittedAt ?? null,
   };
 
   const submission = existing
@@ -1442,6 +1652,43 @@ export async function getSubmissionDownloadUrl(submissionId: string) {
   return data.signedUrl;
 }
 
+export async function createAssignmentAttachmentLink(
+  assignmentId: string,
+  input: { kind?: string; title: string; url: string },
+) {
+  const { orgId } = await requireAdminOrg();
+  await assertAssignmentInOrg(assignmentId, orgId);
+
+  const title = (input.title ?? "").trim();
+  if (!title) throw new Error("Title is required.");
+  const raw = (input.url ?? "").trim();
+  if (!raw) throw new Error("Please add a link.");
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("That link is not valid.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Links must start with http:// or https://");
+  }
+
+  const normalizedKind = (["instructions", "answer_key"].includes(input.kind ?? "")
+    ? input.kind
+    : "reference") as "instructions" | "reference" | "answer_key";
+
+  const [row] = await db
+    .insert(assignmentAttachments)
+    .values({
+      assignmentId,
+      kind: normalizedKind,
+      fileName: title,
+      url: parsed.toString(),
+    })
+    .returning();
+  return row;
+}
+
 export async function uploadAssignmentAttachment(
   assignmentId: string,
   kind: string,
@@ -1453,9 +1700,9 @@ export async function uploadAssignmentAttachment(
   const file = formData.get("file") as File | null;
   if (!file || !file.size) throw new Error("Please choose a file.");
 
-  const normalizedKind = (kind === "instructions" ? "instructions" : "reference") as
-    | "instructions"
-    | "reference";
+  const normalizedKind = (["instructions", "answer_key"].includes(kind ?? "")
+    ? kind
+    : "reference") as "instructions" | "reference" | "answer_key";
 
   if (!(await ensureBucket())) {
     throw new Error(
@@ -1484,6 +1731,7 @@ export async function uploadAssignmentAttachment(
     fileName: file.name,
     filePath,
     fileSize: file.size,
+    url: null,
   });
   return { success: true };
 }
@@ -1493,12 +1741,12 @@ export async function removeAssignmentAttachment(attachmentId: string) {
 
   const row = await db.query.assignmentAttachments.findFirst({
     where: (t, { eq: e }) => e(t.id, attachmentId),
-    columns: { assignmentId: true, filePath: true },
+    columns: { assignmentId: true, filePath: true, url: true },
   });
   if (!row) return { success: true };
   await assertAssignmentInOrg(row.assignmentId, orgId);
 
-  if (await ensureBucket()) {
+  if (row.filePath && (await ensureBucket())) {
     await getSupabaseServer()!
       .storage.from(SUBMISSION_BUCKET)
       .remove([row.filePath]);
@@ -1541,6 +1789,10 @@ export async function getAssignmentAttachmentUrl(attachmentId: string) {
     }
   }
 
+  // External link: just return it for opening in a new tab.
+  if (attachment.url) return attachment.url;
+
+  if (!attachment.filePath) throw new Error("Attachment is missing a file.");
   if (!(await ensureBucket())) {
     throw new Error("Storage is not configured.");
   }
@@ -1994,8 +2246,28 @@ export async function listMyAttendance() {
 
 export async function listPendingSubmissions() {
   const { orgId } = await requireAdminOrg();
-  return db
-    .select()
+  const rows = await db
+    .select({
+      id: submissions.id,
+      assignmentId: submissions.assignmentId,
+      studentId: submissions.studentId,
+      fileName: submissions.fileName,
+      fileUrl: submissions.fileUrl,
+      fileSize: submissions.fileSize,
+      comments: submissions.comments,
+      status: submissions.status,
+      grade: submissions.grade,
+      feedback: submissions.feedback,
+      gradedAt: submissions.gradedAt,
+      resubmitted: submissions.resubmitted,
+      resubmittedAt: submissions.resubmittedAt,
+      createdAt: submissions.createdAt,
+      updatedAt: submissions.updatedAt,
+      studentName: user.name,
+      studentEmail: user.email,
+      assignmentTitle: assignments.title,
+      courseId: assignments.courseId,
+    })
     .from(submissions)
     .innerJoin(user, eq(submissions.studentId, user.id))
     .innerJoin(assignments, eq(submissions.assignmentId, assignments.id))
@@ -2004,6 +2276,7 @@ export async function listPendingSubmissions() {
     )
     .orderBy(desc(submissions.createdAt))
     .limit(20);
+  return rows;
 }
 
 export async function gradeSubmission(
@@ -2125,7 +2398,10 @@ export async function getMyGrades() {
       gradedAt: a.submittedAt,
     });
   }
-  for (const { submissions: s, assignments: a } of subs) {
+  for (const r of subs as any[]) {
+    const s = r.submissions ?? r;
+    const a = r.assignments ?? r.assignment;
+    if (!a) continue;
     const course = courseMap.get(a.courseId);
     const percent = a.maxScore > 0 && s.grade != null ? (s.grade / a.maxScore) * 100 : null;
     rows.push({
@@ -2455,12 +2731,14 @@ export async function getStudentDashboardData(): Promise<DashboardData> {
       upcomingAssignments: [],
       pendingGradingCount: pendingRes[0]?.count ?? 0,
       recentSubmissions: recentSubmissions.map((r) => ({
-        id: r.submissions.id,
-        assignmentId: r.submissions.assignmentId,
-        fileName: r.submissions.fileName,
-        assignmentTitle: r.assignments.title,
-        studentName: r.user.name,
-        createdAt: r.submissions.createdAt,
+        id: r.id,
+        assignmentId: r.assignmentId,
+        fileName: r.fileName,
+        assignmentTitle: r.assignmentTitle,
+        studentName: r.studentName,
+        createdAt: r.createdAt,
+        resubmitted: r.resubmitted,
+        resubmittedAt: r.resubmittedAt,
       })),
       recentGrades: [],
       studentCount: studentCountRes[0]?.count ?? 0,
@@ -2523,7 +2801,12 @@ export async function getStudentDashboardData(): Promise<DashboardData> {
     : [];
   const upcomingAssignments = courseIds.length
     ? await db
-        .select()
+        .select({
+          id: assignments.id,
+          courseId: assignments.courseId,
+          title: assignments.title,
+          dueAt: assignments.dueAt,
+        })
         .from(assignments)
         .where(
           and(
@@ -2949,7 +3232,26 @@ export async function getUpcomingForCourse(courseId: string) {
       )
       .orderBy(asc(quizzes.dueAt)),
     db
-      .select()
+      .select({
+        id: submissions.id,
+        assignmentId: submissions.assignmentId,
+        studentId: submissions.studentId,
+        fileName: submissions.fileName,
+        fileUrl: submissions.fileUrl,
+        fileSize: submissions.fileSize,
+        comments: submissions.comments,
+        status: submissions.status,
+        grade: submissions.grade,
+        feedback: submissions.feedback,
+        gradedAt: submissions.gradedAt,
+        resubmitted: submissions.resubmitted,
+        resubmittedAt: submissions.resubmittedAt,
+        createdAt: submissions.createdAt,
+        updatedAt: submissions.updatedAt,
+        assignment: assignments,
+        name: user.name,
+        email: user.email,
+      })
       .from(assignments)
       .where(
         and(
@@ -3610,4 +3912,25 @@ export async function getSignatureStatus(): Promise<
     if (entry && data?.some((f) => f.name === file)) entry.uploaded = true;
   }
   return out;
+}
+
+/**
+ * Admin sets a custom password for any student account.
+ * Uses the same direct credential update as setOwnPassword.
+ */
+export async function setStudentPasswordByAdmin(
+  targetUserId: string,
+  newPassword: string,
+) {
+  await requireAdmin();
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error("Password must be at least 8 characters.");
+  }
+  await setCredentialPassword(targetUserId, newPassword);
+  await db
+    .update(user)
+    .set({ mustChangePassword: false })
+    .where(eq(user.id, targetUserId));
+  await revokeUserSessions(targetUserId);
+  return { success: true };
 }

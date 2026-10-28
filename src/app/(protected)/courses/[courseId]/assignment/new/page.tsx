@@ -10,9 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { createAssignment, uploadAssignmentAttachment } from "@/server/ums";
+import { createAssignment, uploadAssignmentAttachment, createAssignmentAttachmentLink } from "@/server/ums";
 import {
   NewFileDraft,
+  NewLinkDraft,
   PendingFilesEditor,
 } from "@/components/ums/assignment-files";
 import { PageHeader } from "@/components/ums/page-header";
@@ -22,6 +23,7 @@ export default function NewAssignmentPage() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<NewFileDraft[]>([]);
+  const [links, setLinks] = useState<NewLinkDraft[]>([]);
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -54,6 +56,13 @@ export default function NewAssignmentPage() {
         const fd = new FormData();
         fd.append("file", d.file);
         await uploadAssignmentAttachment(created.id, d.kind, fd);
+      }
+      for (const l of links) {
+        await createAssignmentAttachmentLink(created.id, {
+          kind: l.kind,
+          title: l.title,
+          url: l.url,
+        });
       }
       toast.success("Assignment created");
       router.push(`/assignments/${created.id}`);
@@ -133,9 +142,9 @@ export default function NewAssignmentPage() {
               />
             </div>
             <div>
-              <Label>Attached files (instructions PDF, references, etc. — optional)</Label>
+              <Label>Attached files or links (instructions, references, etc. — optional)</Label>
               <div className="mt-1.5 rounded-2xl border border-outline-variant/50 p-4">
-                <PendingFilesEditor files={files} setFiles={setFiles} />
+                <PendingFilesEditor files={files} setFiles={setFiles} links={links} setLinks={setLinks} />
               </div>
             </div>
             <div className="flex items-center justify-end gap-3 pt-2">

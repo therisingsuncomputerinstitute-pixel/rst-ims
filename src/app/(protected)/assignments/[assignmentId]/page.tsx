@@ -66,15 +66,25 @@ async function openDownload(fn: () => Promise<string | null>) {
   }
 }
 
-function AssignmentFiles({ attachments }: { attachments: AssignmentAttachment[] }) {
+function AssignmentFiles({
+  attachments,
+  isAdmin = false,
+}: {
+  attachments: AssignmentAttachment[];
+  isAdmin?: boolean;
+}) {
   const instructions = attachments.filter((a) => a.kind === "instructions");
-  const references = attachments.filter((a) => a.kind === "reference");
+  const references = attachments.filter((a) => a.kind === "reference" || a.kind === "link");
+  const answerKeys = attachments.filter((a) => a.kind === "answer_key");
   if (attachments.length === 0) return null;
 
-  const section = (title: string, items: AssignmentAttachment[]) =>
+  const section = (title: string, items: AssignmentAttachment[], isKeySection = false) =>
     items.length === 0 ? null : (
       <div className="mt-5">
-        <p className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant mb-2">
+        <p className={cn(
+          "text-[10px] font-black uppercase tracking-widest mb-2 flex items-center gap-1.5",
+          isKeySection ? "text-amber-500 font-bold" : "text-on-surface-variant"
+        )}>
           {title}
         </p>
         <div className="space-y-2">
@@ -83,7 +93,15 @@ function AssignmentFiles({ attachments }: { attachments: AssignmentAttachment[] 
               key={att.id}
               attachment={att}
               onDownload={() =>
-                openDownload(() => getAssignmentAttachmentUrl(att.id))
+                openDownload(() =>
+                  getAssignmentAttachmentUrl(att.id).then((url) => {
+                    if (url) {
+                      window.open(url, "_blank", "noopener,noreferrer");
+                      return null;
+                    }
+                    return url;
+                  }),
+                )
               }
             />
           ))}
@@ -94,7 +112,8 @@ function AssignmentFiles({ attachments }: { attachments: AssignmentAttachment[] 
   return (
     <div>
       {section("Instructions", instructions)}
-      {section("Reference files", references)}
+      {section("Resources", references)}
+      {isAdmin && section("Answer Key (Admin Only)", answerKeys, true)}
     </div>
   );
 }
@@ -254,7 +273,7 @@ function StudentAssignmentView({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="size-5 text-primary" />
-            {mySubmission ? "Update submission" : "Submit your work"}
+            {mySubmission ? "Resubmit or update your work" : "Submit your work"}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -298,9 +317,14 @@ function StudentAssignmentView({
                   onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 />
                 <span className="inline-flex items-center justify-center rounded-full border border-outline-variant px-4 py-2 text-xs font-bold text-on-surface hover:border-primary/40 cursor-pointer transition-colors">
-                  Choose file
-                </span>
-              </label>
+                Choose file
+              </span>
+            </label>
+            <p className="text-xs text-on-surface-variant">
+              PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, TXT, ZIP, PNG, JPG, JPEG, HEIC,
+              WebP, MP4, MOV up to 5 MB. You can resubmit to replace your file (the
+              old file is removed).
+            </p>
             </div>
             <div>
               <Label htmlFor="as-comments">Comments (optional)</Label>
@@ -322,7 +346,11 @@ function StudentAssignmentView({
               ) : (
                 <Upload className="size-4 mr-1" />
               )}
-              {mySubmission ? "Update submission" : "Submit assignment"}
+                {mySubmission
+                  ? mySubmission.resubmitted
+                    ? "Resubmit assignment"
+                    : "Update submission"
+                  : "Submit assignment"}
             </Button>
           </div>
         </CardContent>
@@ -371,6 +399,9 @@ function SubmissionStatus({
           </p>
           <p className="text-xs text-on-surface-variant mt-0.5">
             Submitted {format(new Date(submission.createdAt), "MMM d, h:mm a")}
+            {submission.resubmitted && submission.resubmittedAt && (
+              <> · Resubmitted {format(new Date(submission.resubmittedAt), "MMM d, h:mm a")}</>
+            )}
             {submission.comments && ` · “${submission.comments}”`}
           </p>
           {submission.fileUrl && (
@@ -380,7 +411,7 @@ function SubmissionStatus({
               }
               className="inline-flex items-center gap-1.5 text-xs font-bold text-primary mt-2 hover:underline"
             >
-              <Download className="size-3.5" /> Download submission
+              <Download className="size-3.5" /> View / Download submission
             </button>
           )}
         </div>
@@ -488,8 +519,13 @@ function AdminAssignmentView({
                 Edit assignment
               </Button>
             </Link>
+            <Link href={`/submissions`}>
+              <Button variant="outline" size="sm" className="rounded-full">
+                View all submissions
+              </Button>
+            </Link>
           </div>
-          <AssignmentFiles attachments={assignment.attachments ?? []} />
+          <AssignmentFiles attachments={assignment.attachments ?? []} isAdmin={true} />
         </CardContent>
       </Card>
 
@@ -509,53 +545,114 @@ function AdminAssignmentView({
               No submissions yet.
             </p>
           ) : (
-            <div className="flex flex-col divide-y divide-outline-variant/40">
+            <div className="flex flex-col gap-3">
               {submissions.map((s) => (
-                <div key={s.id} className="flex items-center justify-between py-3 gap-3">
-                  <div className="min-w-0 flex items-center gap-3">
-                    <div className="size-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                      <span className="text-xs font-black text-primary">
-                        {s.user?.name?.slice(0, 2).toUpperCase() ?? "?"}
-                      </span>
+                <div
+                  key={s.id}
+                  className="rounded-2xl border border-outline-variant/60 bg-surface-container-highest/20 p-4 transition-all hover:border-outline-variant"
+                >
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="size-10 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
+                        <span className="text-sm font-black text-primary">
+                          {s.user?.name?.slice(0, 2).toUpperCase() ?? "?"}
+                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-bold text-on-surface">
+                            {s.user?.name ?? "Student"}
+                          </p>
+                          <span className="text-xs text-on-surface-variant font-mono">
+                            ({s.user?.email})
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-on-surface-variant mt-0.5">
+                          Submitted {format(new Date(s.createdAt), "MMM d, yyyy h:mm a")}
+                          {s.resubmitted && s.resubmittedAt && (
+                            <span className="text-amber-500 font-semibold ml-1.5">
+                              · Resubmitted {format(new Date(s.resubmittedAt), "MMM d, h:mm a")}
+                            </span>
+                          )}
+                        </p>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-on-surface truncate">
-                        {s.user?.name}
-                      </p>
-                      <p className="text-xs text-on-surface-variant truncate">
-                        {s.fileName}
-                        {s.comments && ` · “${s.comments}”`}
-                      </p>
+
+                    <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                      {s.status === "graded" ? (
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="rounded-full text-emerald-500 font-mono px-3 py-1">
+                            {s.grade}/{assignment.maxScore}
+                          </Badge>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full text-xs"
+                            onClick={() => {
+                              setGradeTarget(s);
+                              setGradeVal(s.grade ?? 0);
+                            }}
+                          >
+                            Edit Grade
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          className="rounded-full px-5 text-xs font-bold"
+                          onClick={() => {
+                            setGradeTarget(s);
+                            setGradeVal(s.grade ?? 0);
+                          }}
+                        >
+                          Grade Submission
+                        </Button>
+                      )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {s.fileUrl && (
-                      <button
-                        onClick={() =>
-                          openDownload(() => getSubmissionDownloadUrl(s.id))
-                        }
-                        className="inline-flex items-center gap-1 rounded-full border border-outline-variant px-3 py-1.5 text-xs font-bold text-on-surface hover:border-primary/40 transition-colors"
-                      >
-                        <Download className="size-3.5" /> File
-                      </button>
-                    )}
-{s.status === "graded" ? (
-                      <Badge variant="secondary" className="rounded-full text-emerald-500">
-                        {s.grade}/{assignment.maxScore}
-                      </Badge>
-                    ) : (
+
+                  {/* Prominent File & Link Access Box */}
+                  <div className="mt-3.5 pt-3 border-t border-outline-variant/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-container/60 rounded-xl p-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="p-2 rounded-lg bg-primary/10 text-primary shrink-0">
+                        <FileText className="size-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-on-surface truncate">
+                          {s.fileName ?? "Submission file"}
+                        </p>
+                        <p className="text-[11px] text-on-surface-variant">
+                          Click download to view student&apos;s submitted work
+                        </p>
+                      </div>
+                    </div>
+                    {s.fileUrl ? (
                       <Button
                         size="sm"
-                        className="rounded-full"
-                        onClick={() => {
-                          setGradeTarget(s);
-                          setGradeVal(s.grade ?? 0);
-                        }}
+                        variant="default"
+                        className="rounded-full shrink-0 shadow-sm"
+                        onClick={() => openDownload(() => getSubmissionDownloadUrl(s.id))}
                       >
-                        Grade
+                        <Download className="size-4 mr-1.5" />
+                        Download File
                       </Button>
+                    ) : (
+                      <span className="text-xs text-on-surface-variant italic">No file attached</span>
                     )}
                   </div>
+
+                  {s.comments && (
+                    <div className="mt-2.5 rounded-xl bg-surface-container-highest/40 p-2.5 text-xs text-on-surface-variant">
+                      <span className="font-bold text-on-surface mr-1">Student Notes:</span>
+                      &ldquo;{s.comments}&rdquo;
+                    </div>
+                  )}
+                  {s.feedback && (
+                    <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+                      <span className="font-bold mr-1">Instructor Feedback:</span>
+                      &ldquo;{s.feedback}&rdquo;
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -569,7 +666,11 @@ function AdminAssignmentView({
             <DialogHeader>
               <DialogTitle>Grade submission</DialogTitle>
               <DialogDescription>
-                {gradeTarget.user?.name} · {gradeTarget.fileName}
+                {gradeTarget.user?.name}
+                {gradeTarget.resubmitted && gradeTarget.resubmittedAt && (
+                  <> · Resubmitted {format(new Date(gradeTarget.resubmittedAt), "MMM d, h:mm a")}</>
+                )}
+                {" · "}{gradeTarget.fileName}
                 {gradeTarget.fileUrl && (
                   <>
                     {" · "}

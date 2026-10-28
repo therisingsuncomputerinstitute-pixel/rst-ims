@@ -1306,6 +1306,11 @@ export const quizAttempts = pgTable(
       .default("in_progress")
       .notNull(),
     violations: integer("violations").notNull().default(0),
+    currentViolations: integer("current_violations").notNull().default(0),
+    pausedAt: timestamp("paused_at"),
+    pauseCount: integer("pause_count").notNull().default(0),
+    warningLimit: integer("warning_limit").notNull().default(3),
+    terminatedByAdmin: boolean("terminated_by_admin").notNull().default(false),
     startedAt: timestamp("started_at").defaultNow().notNull(),
     submittedAt: timestamp("submitted_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1440,12 +1445,14 @@ export const assignmentAttachments = pgTable(
     assignmentId: uuid("assignment_id")
       .notNull()
       .references(() => assignments.id, { onDelete: "cascade" }),
-    kind: text("kind", { enum: ["instructions", "reference"] })
+    kind: text("kind", { enum: ["instructions", "reference", "link", "answer_key"] })
       .notNull()
       .default("reference"),
-    fileName: text("file_name").notNull(),
-    filePath: text("file_path").notNull(),
+    fileName: text("file_name"),
+    filePath: text("file_path"),
     fileSize: integer("file_size"),
+    url: text("url"),
+    publishedToStudents: boolean("published_to_students").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [index("assignment_attachments_assign_idx").on(table.assignmentId)],
@@ -1474,6 +1481,8 @@ export const submissions = pgTable(
       onDelete: "set null",
     }),
     gradedAt: timestamp("graded_at"),
+    resubmitted: boolean("resubmitted").default(false).notNull(),
+    resubmittedAt: timestamp("resubmitted_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()

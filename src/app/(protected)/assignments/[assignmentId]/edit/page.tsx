@@ -16,12 +16,14 @@ import {
   updateAssignment,
   uploadAssignmentAttachment,
   removeAssignmentAttachment,
+  createAssignmentAttachmentLink,
   getAssignmentAttachmentUrl,
 } from "@/server/ums";
 import {
   AssignmentAttachment,
   AttachmentRow,
   NewFileDraft,
+  NewLinkDraft,
   PendingFilesEditor,
 } from "@/components/ums/assignment-files";
 import { format } from "date-fns";
@@ -34,6 +36,7 @@ export default function EditAssignmentPage() {
   const [attachments, setAttachments] = useState<AssignmentAttachment[]>([]);
   const [removed, setRemoved] = useState<string[]>([]);
   const [newFiles, setNewFiles] = useState<NewFileDraft[]>([]);
+  const [newLinks, setNewLinks] = useState<NewLinkDraft[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -79,6 +82,13 @@ export default function EditAssignmentPage() {
         const fd = new FormData();
         fd.append("file", d.file);
         await uploadAssignmentAttachment(params.assignmentId, d.kind, fd);
+      }
+      for (const l of newLinks) {
+        await createAssignmentAttachmentLink(params.assignmentId, {
+          kind: l.kind,
+          title: l.title,
+          url: l.url,
+        });
       }
       toast.success("Assignment updated");
       router.push(`/assignments/${params.assignmentId}`);
@@ -165,7 +175,7 @@ export default function EditAssignmentPage() {
               />
             </div>
             <div>
-              <Label>Attached files</Label>
+              <Label>Attached files or links</Label>
               {attachments.length > 0 && (
                 <div className="mt-1.5 space-y-2">
                   {attachments.map((att) => (
@@ -177,7 +187,7 @@ export default function EditAssignmentPage() {
                           const url = await getAssignmentAttachmentUrl(att.id);
                           if (url) window.open(url, "_blank", "noopener,noreferrer");
                         } catch (err: any) {
-                          toast.error(err.message || "Could not open file");
+                          toast.error(err.message || "Could not open attachment");
                         }
                       }}
                       onRemove={() => {
@@ -189,7 +199,12 @@ export default function EditAssignmentPage() {
                 </div>
               )}
               <div className="mt-3 rounded-2xl border border-outline-variant/50 p-4">
-                <PendingFilesEditor files={newFiles} setFiles={setNewFiles} />
+                <PendingFilesEditor
+                  files={newFiles}
+                  setFiles={setNewFiles}
+                  links={newLinks}
+                  setLinks={setNewLinks}
+                />
               </div>
             </div>
             <div className="flex items-center justify-end gap-3 pt-2">

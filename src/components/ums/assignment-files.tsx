@@ -1,9 +1,11 @@
 "use client";
 
-import { useRef, type Dispatch, type SetStateAction } from "react";
-import { FileText, Plus, X, Download, Trash2 } from "lucide-react";
+import { useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { FileText, Plus, X, Download, Trash2, Link as LinkIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDelete } from "@/components/ums/confirm-delete";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -11,12 +13,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
-export type AssignmentAttachmentKind = "instructions" | "reference";
+export type AssignmentAttachmentKind = "instructions" | "reference" | "link" | "answer_key";
 
 export const ATTACHMENT_KIND_LABELS: Record<AssignmentAttachmentKind, string> = {
   instructions: "Instructions",
   reference: "Reference",
+  link: "Link",
+  answer_key: "Answer Key",
 };
 
 export type AssignmentAttachment = {
@@ -25,13 +36,31 @@ export type AssignmentAttachment = {
   fileName: string;
   fileSize: number | null;
   createdAt: Date;
+  url?: string | null;
 };
+
+export type DraftAttachmentKind = "instructions" | "reference" | "answer_key";
 
 export type NewFileDraft = {
   key: string;
   file: File;
-  kind: AssignmentAttachmentKind;
+  kind: DraftAttachmentKind;
 };
+
+export type NewLinkDraft = {
+  key: string;
+  title: string;
+  url: string;
+  kind: DraftAttachmentKind;
+};
+
+function parseDraftKind(v: string | null): DraftAttachmentKind {
+  return v === "instructions" || v === "answer_key" ? v : "reference";
+}
+
+export type NewAttachmentDraft =
+  | ({ type: "file" } & NewFileDraft)
+  | ({ type: "link" } & NewLinkDraft);
 
 export function newFileKey() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -48,11 +77,19 @@ export function fileSizeLabel(bytes: number): string {
 export function PendingFilesEditor({
   files,
   setFiles,
+  links,
+  setLinks,
 }: {
   files: NewFileDraft[];
   setFiles: Dispatch<SetStateAction<NewFileDraft[]>>;
+  links?: NewLinkDraft[];
+  setLinks?: Dispatch<SetStateAction<NewLinkDraft[]>>;
 }) {
   const addedRef = useRef<number>(0);
+  const [open, setOpen] = useState(false);
+  const [linkTitle, setLinkTitle] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkKind, setLinkKind] = useState<DraftAttachmentKind>("reference");
 
   const appendFile = (file: File) => {
     setFiles((prev) => [
@@ -60,18 +97,93 @@ export function PendingFilesEditor({
       {
         key: newFileKey(),
         file,
-        kind: "reference" as AssignmentAttachmentKind,
+        kind: "reference",
       },
     ]);
     addedRef.current += 1;
   };
 
+  const addLink = () => {
+    if (!setLinks) return;
+    if (!linkTitle.trim()) return;
+    if (!linkUrl.trim()) return;
+    setLinks((prev) => [
+      ...(prev ?? []),
+      {
+        key: newFileKey(),
+        title: linkTitle.trim(),
+        url: linkUrl.trim(),
+        kind: linkKind,
+      },
+    ]);
+    setLinkTitle("");
+    setLinkUrl("");
+    setLinkKind("reference");
+    setOpen(false);
+  };
+
   return (
     <div className="space-y-3">
-      {files.length === 0 && (
+      {links && links.length > 0 && (
+        <div className="space-y-2">
+          {links.map((d) => (
+            <div
+              key={d.key}
+              className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-4"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <LinkIcon className="size-5 text-primary shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-on-surface truncate">
+                    {d.title}
+                  </p>
+                  <p className="text-xs text-on-surface-variant truncate">
+                    {ATTACHMENT_KIND_LABELS[d.kind]} · {d.url}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Select
+                  value={d.kind}
+                  onValueChange={(v) => {
+                    const kind = parseDraftKind(v);
+                    if (!setLinks) return;
+                    setLinks((prev) =>
+                      (prev ?? []).map((p) => (p.key === d.key ? { ...p, kind } : p)),
+                    );
+                  }}
+                >
+                  <SelectTrigger className="w-36 h-9 text-xs rounded-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="instructions">Instructions</SelectItem>
+                    <SelectItem value="reference">Reference</SelectItem>
+                    <SelectItem value="answer_key">Answer Key</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full size-8 shrink-0"
+                  onClick={() => {
+                    if (setLinks) {
+                      setLinks((prev) => (prev ?? []).filter((p) => p.key !== d.key));
+                    }
+                  }}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {files.length === 0 && (!links || links.length === 0) && (
         <p className="text-xs text-on-surface-variant">
-          No files attached yet. Add an instructions PDF, reference material, or
-          any other format.
+          No files or links attached yet. Add an instructions PDF, reference material,
+          or an external link.
         </p>
       )}
       {files.map((d) => (
@@ -86,7 +198,7 @@ export function PendingFilesEditor({
                 {d.file.name}
               </p>
               <p className="text-xs text-on-surface-variant">
-                {fileSizeLabel(d.file.size)}
+                {ATTACHMENT_KIND_LABELS[d.kind]} · {fileSizeLabel(d.file.size)}
               </p>
             </div>
           </div>
@@ -94,8 +206,7 @@ export function PendingFilesEditor({
             <Select
               value={d.kind}
               onValueChange={(v) => {
-                const kind =
-                  v === "instructions" ? "instructions" : "reference";
+                const kind = parseDraftKind(v);
                 setFiles((prev) =>
                   prev.map((p) => (p.key === d.key ? { ...p, kind } : p)),
                 );
@@ -107,6 +218,7 @@ export function PendingFilesEditor({
               <SelectContent>
                 <SelectItem value="instructions">Instructions</SelectItem>
                 <SelectItem value="reference">Reference</SelectItem>
+                <SelectItem value="answer_key">Answer Key</SelectItem>
               </SelectContent>
             </Select>
             <Button
@@ -123,19 +235,85 @@ export function PendingFilesEditor({
           </div>
         </div>
       ))}
-      <label className="inline-flex items-center justify-center gap-2 rounded-full border border-outline-variant px-4 py-2 text-xs font-bold text-on-surface hover:border-primary/40 cursor-pointer transition-colors">
-        <Plus className="size-4" />
-        Add file
-        <input
-          type="file"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) appendFile(f);
-            e.target.value = "";
-          }}
-        />
-      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="inline-flex items-center justify-center gap-2 rounded-full border border-outline-variant px-4 py-2 text-xs font-bold text-on-surface hover:border-primary/40 cursor-pointer transition-colors">
+          <Plus className="size-4" />
+          Add file
+          <input
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) appendFile(f);
+              e.target.value = "";
+            }}
+          />
+        </label>
+        {setLinks && (
+          <Button
+            type="button"
+            variant="outline"
+            className="rounded-full"
+            onClick={() => setOpen(true)}
+          >
+            <LinkIcon className="size-4 mr-1" /> Add link
+          </Button>
+        )}
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Add a link</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="att-link-title">Title</Label>
+              <Input
+                id="att-link-title"
+                value={linkTitle}
+                onChange={(e) => setLinkTitle(e.target.value)}
+                placeholder="e.g. Lecture slides"
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label htmlFor="att-link-url">URL</Label>
+              <Input
+                id="att-link-url"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="https://..."
+                className="mt-1.5"
+              />
+            </div>
+            <div>
+              <Label>Type</Label>
+              <Select
+                value={linkKind}
+                onValueChange={(v) => setLinkKind(parseDraftKind(v))}
+              >
+                <SelectTrigger className="mt-1.5 rounded-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="reference">Reference</SelectItem>
+                  <SelectItem value="instructions">Instructions</SelectItem>
+                  <SelectItem value="answer_key">Answer Key</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" className="rounded-full" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button className="rounded-full" onClick={addLink} disabled={!linkTitle.trim() || !linkUrl.trim()}>
+              Add link
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -149,17 +327,23 @@ export function AttachmentRow({
   onDownload: () => void;
   onRemove?: () => void;
 }) {
+  const isLink = attachment.kind === "link" || !!attachment.url;
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-3.5">
       <div className="flex items-center gap-3 min-w-0">
-        <FileText className="size-5 text-primary shrink-0" />
+        {isLink ? (
+          <LinkIcon className="size-5 text-primary shrink-0" />
+        ) : (
+          <FileText className="size-5 text-primary shrink-0" />
+        )}
         <div className="min-w-0">
           <p className="text-sm font-bold text-on-surface truncate">
             {attachment.fileName}
           </p>
           <p className="text-xs text-on-surface-variant">
-            {ATTACHMENT_KIND_LABELS[attachment.kind]}
-            {attachment.fileSize ? ` · ${fileSizeLabel(attachment.fileSize)}` : ""}
+            {ATTACHMENT_KIND_LABELS[attachment.kind as AssignmentAttachmentKind] ?? "Reference"}
+            {!isLink && attachment.fileSize ? ` · ${fileSizeLabel(attachment.fileSize)}` : ""}
+            {isLink && attachment.url ? ` · ${attachment.url.replace(/^https?:\/\//, "").slice(0, 40)}` : ""}
           </p>
         </div>
       </div>
@@ -171,7 +355,8 @@ export function AttachmentRow({
           className="rounded-full"
           onClick={onDownload}
         >
-          <Download className="size-4 mr-1" /> Download
+          {isLink ? <LinkIcon className="size-4 mr-1" /> : <Download className="size-4 mr-1" />}
+          {isLink ? "Open" : "Download"}
         </Button>
         {onRemove && (
           <ConfirmDelete
@@ -183,7 +368,7 @@ export function AttachmentRow({
             consequences={
               <li className="flex items-center gap-2">
                 <Trash2 className="size-3.5 shrink-0" />
-                The file is deleted from storage when you save, and cannot be restored
+                This item will be removed from the assignment
               </li>
             }
             onConfirm={onRemove}

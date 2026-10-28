@@ -32,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import {
   FullscreenGuard,
+  PausedOverlay,
   ProctorBadge,
   ProctorWarning,
   useQuizProctor,
@@ -53,6 +54,10 @@ import {
   toggleQuizPublish,
   deleteQuiz,
   getQuizStats,
+  pauseStudentQuiz,
+  resumeStudentQuiz,
+  terminateStudentQuiz,
+  getMyAttemptStatus,
 } from "@/server/ums";
 import { letterForPercent } from "@/lib/grading";
 
@@ -309,20 +314,57 @@ function AttemptView({
   onDone,
 }: {
   quiz: QuizData;
-  attempt: { id: string; status: string };
+  attempt: { id: string; status: string; warningLimit?: number };
   onDone: (a: any) => void;
 }) {
   const questions = (quiz as any).questions as any[];
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [current, setCurrent] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isTerminated, setIsTerminated] = useState(false);
+  const [warningLimit, setWarningLimit] = useState(attempt.warningLimit ?? 3);
   const [secondsLeft, setSecondsLeft] = useState(
     (quiz as any).durationMinutes * 60,
   );
   const submittedRef = useRef(false);
-  const proctor = useQuizProctor(true, () => {
-    recordQuizViolation(attempt.id).catch(() => {});
+
+  const proctor = useQuizProctor(!isPaused && !isTerminated, async () => {
+    try {
+      const res: any = await recordQuizViolation(attempt.id);
+      if (res?.terminated) {
+        setIsTerminated(true);
+      } else if (res?.autoPaused) {
+        setIsPaused(true);
+        if (res.warningLimit !== undefined) setWarningLimit(res.warningLimit);
+      } else if (res?.warningLimit !== undefined) {
+        setWarningLimit(res.warningLimit);
+      }
+    } catch {
+      // ignore
+    }
   });
+
+  // Polling for admin resume/pause/termination every 3 seconds
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      try {
+        const status = await getMyAttemptStatus(attempt.id);
+        if (status.status === "submitted") {
+          clearInterval(poll);
+          window.location.reload();
+          return;
+        }
+        setIsPaused(Boolean(status.pausedAt));
+        if (status.warningLimit !== undefined) {
+          setWarningLimit(status.warningLimit);
+        }
+      } catch {
+        // ignore
+      }
+    }, 3000);
+    return () => clearInterval(poll);
+  }, [attempt.id]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -339,6 +381,7 @@ function AttemptView({
   }, []);
 
   const choose = (qid: string, value: string) => {
+    if (isPaused || isTerminated) return;
     const q = questions.find((x) => x.id === qid);
     const single = q?.type === "true_false";
     setAnswers((a) => ({
@@ -520,6 +563,7 @@ function AttemptView({
         <ProctorWarning
           violation={proctor.warning}
           count={proctor.violationCount}
+          warningLimit={attempt.warningLimit ?? 3}
           onDismiss={proctor.dismissWarning}
         />
       )}
