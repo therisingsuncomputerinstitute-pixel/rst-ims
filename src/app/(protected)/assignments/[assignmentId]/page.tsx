@@ -49,6 +49,21 @@ import { letterForPercent } from "@/lib/grading";
 
 type AssignmentData = Awaited<ReturnType<typeof getAssignment>>;
 
+function toSafeDate(value: unknown): Date | null {
+  const d = value ? new Date(value as string | number | Date) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+
+function fmtDate(value: unknown, pattern: string): string {
+  const d = toSafeDate(value);
+  if (!d) return "-";
+  try {
+    return format(d, pattern);
+  } catch {
+    return "-";
+  }
+}
+
 function letterColor(letter: string) {
   if (letter === "A") return "text-emerald-400";
   if (letter === "B") return "text-orange-400";
@@ -192,6 +207,7 @@ function StudentAssignmentView({
   const [comments, setComments] = useState("");
   const [saving, setSaving] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const dueDate = toSafeDate(assignment.dueAt);
 
   const submit = async () => {
     if (!file) return toast.error("Please attach a file.");
@@ -232,18 +248,16 @@ function StudentAssignmentView({
             <span className="flex items-center gap-2 text-sm font-bold text-on-surface-variant">
               <Rocket className="size-4 text-primary" /> {assignment.maxScore} points
             </span>
-            {assignment.dueAt && (
+            {dueDate ? (
               <span
                 className={cn(
                   "flex items-center gap-2 text-sm font-bold",
-                  new Date(assignment.dueAt) < new Date()
-                    ? "text-rose-400"
-                    : "text-on-surface-variant",
+                  dueDate < new Date() ? "text-rose-400" : "text-on-surface-variant",
                 )}
               >
-                <CalendarDays className="size-4" /> Due {format(new Date(assignment.dueAt), "MMM d, h:mm a")}
+                <CalendarDays className="size-4" /> Due {fmtDate(dueDate, "MMM d, h:mm a")}
               </span>
-            )}
+            ) : null}
           </div>
           {assignment.description && (
             <p className="text-sm text-on-surface-variant mt-4">
@@ -367,6 +381,7 @@ function SubmissionStatus({
   maxScore: number;
 }) {
   const graded = submission.status === "graded";
+  const submittedAt = toSafeDate(submission.createdAt);
   const pct =
     graded && maxScore > 0
       ? Math.round((submission.grade / maxScore) * 100)
@@ -398,9 +413,9 @@ function SubmissionStatus({
             {submission.fileName}
           </p>
           <p className="text-xs text-on-surface-variant mt-0.5">
-            Submitted {format(new Date(submission.createdAt), "MMM d, h:mm a")}
+            Submitted {fmtDate(submittedAt, "MMM d, h:mm a")}
             {submission.resubmitted && submission.resubmittedAt && (
-              <> · Resubmitted {format(new Date(submission.resubmittedAt), "MMM d, h:mm a")}</>
+              <> · Resubmitted {fmtDate(submission.resubmittedAt, "MMM d, h:mm a")}</>
             )}
             {submission.comments && ` · “${submission.comments}”`}
           </p>
@@ -458,6 +473,7 @@ function AdminAssignmentView({
   const [gradeVal, setGradeVal] = useState<number>(0);
   const [feedback, setFeedback] = useState("");
   const [saving, setSaving] = useState(false);
+  const dueDate = toSafeDate(assignment.dueAt);
 
   useEffect(() => {
     if (gradeTarget) setGradeVal(gradeTarget.grade ?? 0);
@@ -510,8 +526,7 @@ function AdminAssignmentView({
           </h1>
           <p className="text-sm text-on-surface-variant mt-1">
             {assignment.maxScore} points
-            {assignment.dueAt &&
-              ` · due ${format(new Date(assignment.dueAt), "MMM d, h:mm a")}`}
+            {dueDate ? ` · due ${fmtDate(dueDate, "MMM d, h:mm a")}` : ""}
           </p>
           <div className="flex items-center gap-2 mt-4">
             <Link href={`/assignments/${assignmentId}/edit`}>
@@ -563,10 +578,10 @@ function AdminAssignmentView({
                           </span>
                         </div>
                         <p className="text-[11px] text-on-surface-variant mt-0.5">
-                          Submitted {format(new Date(s.createdAt), "MMM d, yyyy h:mm a")}
+                          Submitted {fmtDate(s.createdAt, "MMM d, yyyy h:mm a")}
                           {s.resubmitted && s.resubmittedAt && (
                             <span className="text-amber-500 font-semibold ml-1.5">
-                              · Resubmitted {format(new Date(s.resubmittedAt), "MMM d, h:mm a")}
+                              · Resubmitted {fmtDate(s.resubmittedAt, "MMM d, h:mm a")}
                             </span>
                           )}
                         </p>
@@ -663,7 +678,7 @@ function AdminAssignmentView({
               <DialogDescription>
                 {gradeTarget.user?.name}
                 {gradeTarget.resubmitted && gradeTarget.resubmittedAt && (
-                  <> · Resubmitted {format(new Date(gradeTarget.resubmittedAt), "MMM d, h:mm a")}</>
+                  <> · Resubmitted {fmtDate(gradeTarget.resubmittedAt, "MMM d, h:mm a")}</>
                 )}
                 {" · "}{gradeTarget.fileName}
                 {gradeTarget.fileUrl && (
