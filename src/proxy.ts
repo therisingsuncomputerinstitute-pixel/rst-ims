@@ -6,7 +6,6 @@ export async function proxy(request: NextRequest) {
   const sessionCookie = getSessionCookie(request);
   const { pathname } = request.nextUrl;
 
-  // 1. Define route groups cleanly
   const protectedRoutes = [
     "/dashboard",
     "/courses",
@@ -27,6 +26,45 @@ export async function proxy(request: NextRequest) {
   );
   const isAuthRoute = pathname.startsWith("/login");
   const isSetPasswordRoute = pathname.startsWith("/set-password");
+  const isMaintenanceRoute = pathname.startsWith("/maintenance");
+  const isMaintenanceApi = pathname.startsWith("/api/maintenance");
+  const isAuthApi = pathname.startsWith("/api/auth");
+  const isAsset =
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/icon") ||
+    pathname.startsWith("/apple-icon") ||
+    pathname.startsWith("/manifest") ||
+    pathname.startsWith("/robots") ||
+    pathname.startsWith("/sitemap") ||
+    pathname.startsWith("/vercel");
+
+  const maintenanceBypass =
+    isMaintenanceRoute || isMaintenanceApi || isAuthApi || isAsset;
+
+  // Maintenance mode: while the portal flag is on, every page except the
+  // maintenance screen itself (and auth/assets) bounces to /maintenance. This
+  // applies to students, admins, and unauthenticated visitors alike.
+  if (!maintenanceBypass) {
+    try {
+      const statusRes = await fetch(
+        `${request.nextUrl.origin}/api/maintenance/status`,
+        {
+          headers: {
+            cookie: request.headers.get("cookie") || "",
+          },
+        },
+      );
+      const statusData = (await statusRes.json().catch(() => ({}))) as {
+        enabled?: boolean;
+      };
+      if (statusData?.enabled) {
+        return NextResponse.redirect(new URL("/maintenance", request.url));
+      }
+    } catch {
+      // Treat a status fetch failure as "not in maintenance".
+    }
+  }
 
   // 2. Early exit: If no session cookie exists, redirect immediately (Fast Edge Check)
   if (!sessionCookie) {
@@ -49,7 +87,6 @@ export async function proxy(request: NextRequest) {
 
     const sessionData = await sessionRes.json();
 
-    // If cookie was invalid or expired
     if (!sessionData || !sessionData.user) {
       if (isProtectedRoute) {
         return NextResponse.redirect(new URL("/login", request.url));
@@ -57,42 +94,15 @@ export async function proxy(request: NextRequest) {
       return NextResponse.next();
     }
 
-    // Accounts created from the emailed credentials must set their own
-    // password before they can use the portal.
     if (sessionData.user.mustChangePassword && !isSetPasswordRoute) {
       return NextResponse.redirect(new URL("/set-password", request.url));
     }
 
-    // Redirect logged-in users away from auth routes
     if (isAuthRoute) {
       return NextResponse.redirect(new URL("/dashboard", request.url));
     }
-
-    // Maintenance mode: while the portal flag is on, protected routes bounce
-    // to the custom /maintenance page.
-    if (isProtectedRoute && pathname !== "/maintenance") {
-      try {
-        const statusRes = await fetch(
-          `${request.nextUrl.origin}/api/maintenance/status`,
-          {
-            headers: {
-              cookie: request.headers.get("cookie") || "",
-            },
-          },
-        );
-        const statusData = (await statusRes.json().catch(() => ({}))) as {
-          enabled?: boolean;
-        };
-        if (statusData?.enabled) {
-          return NextResponse.redirect(new URL("/maintenance", request.url));
-        }
-      } catch {
-        // Treat a status fetch failure as "not in maintenance".
-      }
-    }
   } catch (error) {
     console.error("Proxy session fetch error:", error);
-    // Fallback: If the API fetch fails for some reason, secure the protected routes
     if (isProtectedRoute) {
       return NextResponse.redirect(new URL("/login", request.url));
     }

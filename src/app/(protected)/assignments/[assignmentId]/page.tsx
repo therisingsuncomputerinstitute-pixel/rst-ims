@@ -636,7 +636,7 @@ function AdminAssignmentView({
                         </p>
                       </div>
                     </div>
-                    {s.fileUrl ? (
+                    {(s.fileUrl || s.fileName) ? (
                       <Button
                         size="sm"
                         variant="default"
