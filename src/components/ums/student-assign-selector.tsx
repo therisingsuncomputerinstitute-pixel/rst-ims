@@ -31,7 +31,7 @@ export function StudentAssignSelector({
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
-  const isSpecific = Array.isArray(value) && value.length > 0;
+  const isSpecific = Array.isArray(value);
   const selectedIds = new Set(Array.isArray(value) ? value : []);
 
   useEffect(() => {

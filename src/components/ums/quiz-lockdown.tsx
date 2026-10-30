@@ -7,11 +7,23 @@ import { Button } from "@/components/ui/button";
 /**
  * Quiz lockdown for online exams.
  *
- * While active it keeps the attempt in full screen, reports any switch to
- * another tab or window, blocks keyboard input, and blocks right-click.
- * Multiple-choice questions stay mouse-only. Free-text answer fields are
- * marked with data-quiz-answer so typing there is allowed.
+ * On desktop: keeps the attempt in full screen, reports tab/window switches,
+ * blocks keyboard input outside free-text fields, and blocks right-click.
+ *
+ * On mobile / touch-only devices: fullscreen and keyboard locking are skipped
+ * because the fullscreen API is unavailable on most mobile browsers and
+ * keyboard blocking would make it impossible to type answers. Tab-switch
+ * detection still runs so the proctor badge still counts those events.
  */
+
+/** Returns true when the device is primarily touch-based (phone/tablet). */
+function isMobileDevice() {
+  if (typeof window === "undefined") return false;
+  return (
+    ("ontouchstart" in window || navigator.maxTouchPoints > 1) &&
+    !window.matchMedia("(pointer: fine)").matches
+  );
+}
 
 export type ProctorViolation = {
   kind: "tab_switch" | "window_blur" | "fullscreen_exit" | "keyboard" | "right_click";
@@ -32,8 +44,11 @@ export function useQuizProctor(
   onViolation?: (v: ProctorViolation) => void,
 ) {
   const [violations, setViolations] = useState<ProctorViolation[]>([]);
+  // On mobile the fullscreen API is unavailable, so we always report "in fullscreen"
+  // to prevent the FullscreenGuard overlay from blocking the attempt.
   const [isFullscreen, setIsFullscreen] = useState(true);
   const [warning, setWarning] = useState<ProctorViolation | null>(null);
+  const mobile = useRef(isMobileDevice());
 
   const onViolationRef = useRef(onViolation);
   useEffect(() => {
@@ -53,6 +68,7 @@ export function useQuizProctor(
   }, []);
 
   const requestFullscreen = useCallback(async () => {
+    if (mobile.current) return; // fullscreen unsupported on mobile
     try {
       if (!document.fullscreenElement) {
         await document.documentElement.requestFullscreen({ navigationUI: "hide" });
@@ -63,6 +79,7 @@ export function useQuizProctor(
   }, []);
 
   const exitFullscreen = useCallback(async () => {
+    if (mobile.current) return;
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
     } catch { /* nothing */ }
@@ -70,7 +87,7 @@ export function useQuizProctor(
 
   const enteredRef = useRef(false);
   useEffect(() => {
-    if (!active) return;
+    if (!active || mobile.current) return; // skip fullscreen tracking on mobile
     const sync = () => {
       const fs = Boolean(document.fullscreenElement);
       if (fs) enteredRef.current = true;
@@ -94,9 +111,10 @@ export function useQuizProctor(
     };
   }, [active, record]);
 
-  // Block keyboard AND right-click, except inside free-text answer fields.
+  // Block keyboard AND right-click on desktop only.
+  // On mobile, keyboard blocking is skipped so students can type answers.
   useEffect(() => {
-    if (!active) return;
+    if (!active || mobile.current) return;
     const inAnswerField = (target: EventTarget | null) => {
       const el = target instanceof HTMLElement ? target : null;
       return Boolean(el?.closest("[data-quiz-answer]"));
@@ -130,7 +148,7 @@ export function useQuizProctor(
   }, [active, record]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || mobile.current) return;
     return () => {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     };

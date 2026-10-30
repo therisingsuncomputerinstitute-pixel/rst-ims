@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Lock,
   ArrowRight,
+  GraduationCap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -96,8 +97,17 @@ export default function AssignmentsPage() {
                         </Badge>
                       )}
                     </div>
-                    <p className="text-xs text-on-surface-variant truncate">
-                      {a.courseCode} · {a.courseName} · {a.maxScore} points
+                    <p className="text-xs text-on-surface-variant truncate flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        {a.courseCode} · {a.courseName}
+                      </span>
+                      {a.instructorName && (
+                        <span className="inline-flex items-center gap-1 text-primary/80 font-medium">
+                          <GraduationCap className="size-3 shrink-0" />
+                          {a.instructorName}
+                        </span>
+                      )}
+                      <span>· {a.maxScore} points</span>
                     </p>
                   </div>
                 </Link>

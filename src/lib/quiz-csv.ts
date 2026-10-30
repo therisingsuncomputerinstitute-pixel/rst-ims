@@ -1,13 +1,11 @@
 /**
- * Turns a CSV produced elsewhere (e.g. by Claude) into quiz question drafts.
+ * Turns a CSV produced elsewhere into quiz question drafts.
  *
- * The file is read with the browser FileReader and parsed here in the client, so
- * it is never uploaded, never written to the database and never leaves the
- * browser. Only the extracted text ends up in the quiz, which is saved through
- * the normal `createQuiz` action once the teacher presses save.
- *
- * Expected columns (matched case-insensitively, extra columns are ignored):
+ * Supported formats:
+ * - Simple MCQ format:
  *   question no, question, option a, option b, option c, option d
+ * - Advanced Multi-Type format:
+ *   Q_No, Type, Question_English, Question_Hinglish, Option_A, Option_B, Option_C, Option_D, Correct_Option, Correct_Answer, Marks
  */
 
 import type { QuestionDraft } from "@/components/ums/quiz-editor";
@@ -19,8 +17,6 @@ export type CsvParseResult = {
   /** Rows that were skipped entirely. */
   skipped: number;
 };
-
-const REQUIRED = ["question", "option a", "option b", "option c", "option d"] as const;
 
 /** Lowercased, punctuation-stripped header cell -> canonical column name. */
 const normalizeHeader = (cell: string) =>
@@ -60,9 +56,6 @@ export function parseCsvRows(text: string): string[][] {
     }
 
     if (char === '"') {
-      // Per RFC 4180 a quote only opens a quoted field when it is the very first
-      // character. Anywhere else it is an ordinary character, so an unquoted
-      // cell such as  Who said "hi"?  keeps its quotes.
       if (cell === "") {
         inQuotes = true;
       } else {
@@ -97,11 +90,18 @@ export function parseCsvRows(text: string): string[][] {
   return rows;
 }
 
-/**
- * Finds the required columns. Falls back to positional order (question, a, b, c, d)
- * when the header row is missing or does not name them.
- */
-function resolveColumns(header: string[] | null) {
+type ColumnMapping = {
+  typeCol?: number;
+  promptCol?: number;
+  englishPromptCol?: number;
+  hinglishPromptCol?: number;
+  optionCols: number[];
+  correctOptionCol?: number;
+  correctAnswerCol?: number;
+  marksCol?: number;
+};
+
+function resolveColumns(header: string[] | null, rowSample?: string[]): ColumnMapping {
   if (header) {
     const map = new Map<string, number>();
     header.forEach((cell, index) => {
@@ -109,22 +109,112 @@ function resolveColumns(header: string[] | null) {
       if (!map.has(name)) map.set(name, index);
     });
 
-    const indices: number[] = [];
-    let missing: string | null = null;
-    for (const column of REQUIRED) {
-      const index = map.get(column);
-      if (index === undefined) {
-        missing = column;
-        break;
-      }
-      indices.push(index);
+    const typeCol =
+      map.get("type") ?? map.get("question type") ?? map.get("q type");
+
+    const englishPromptCol =
+      map.get("question english") ??
+      map.get("english") ??
+      map.get("question en");
+
+    const hinglishPromptCol =
+      map.get("question hinglish") ??
+      map.get("hinglish") ??
+      map.get("question hi") ??
+      map.get("translation");
+
+    const promptCol =
+      map.get("question") ??
+      map.get("prompt") ??
+      map.get("question text") ??
+      map.get("question prompt");
+
+    const optionCols: number[] = [];
+    const standardOptionNames = [
+      "option a",
+      "option b",
+      "option c",
+      "option d",
+      "option e",
+      "option f",
+    ];
+    for (const opt of standardOptionNames) {
+      const idx = map.get(opt);
+      if (idx !== undefined) optionCols.push(idx);
     }
 
-    if (!missing) return { indices };
+    if (optionCols.length === 0) {
+      const numericOptionNames = [
+        "option 1",
+        "option 2",
+        "option 3",
+        "option 4",
+      ];
+      for (const opt of numericOptionNames) {
+        const idx = map.get(opt);
+        if (idx !== undefined) optionCols.push(idx);
+      }
+    }
+
+    // Fallback: look for any column matching "option" or "choice"
+    if (optionCols.length === 0) {
+      header.forEach((cell, index) => {
+        const norm = normalizeHeader(cell);
+        if (norm.startsWith("option") || norm.startsWith("choice")) {
+          optionCols.push(index);
+        }
+      });
+    }
+
+    const correctOptionCol =
+      map.get("correct option") ??
+      map.get("correct choice") ??
+      map.get("correct opt") ??
+      map.get("answer key");
+
+    const correctAnswerCol =
+      map.get("correct answer") ??
+      map.get("accepted answer") ??
+      map.get("accepted answers") ??
+      map.get("answer") ??
+      map.get("solution");
+
+    const marksCol =
+      map.get("marks") ??
+      map.get("points") ??
+      map.get("score") ??
+      map.get("weight");
+
+    return {
+      typeCol,
+      promptCol,
+      englishPromptCol,
+      hinglishPromptCol,
+      optionCols,
+      correctOptionCol,
+      correctAnswerCol,
+      marksCol,
+    };
   }
 
-  // Positional fallback: question, option a, option b, option c, option d.
-  return { indices: [0, 1, 2, 3, 4] };
+  // Positional fallback when no header row is present
+  const colCount = rowSample ? rowSample.length : 5;
+  if (colCount >= 10) {
+    return {
+      typeCol: 1,
+      englishPromptCol: 2,
+      hinglishPromptCol: 3,
+      optionCols: [4, 5, 6, 7],
+      correctOptionCol: 8,
+      correctAnswerCol: 9,
+      marksCol: 10,
+    };
+  }
+
+  return {
+    promptCol: 0,
+    optionCols: [1, 2, 3, 4],
+  };
 }
 
 const cell = (row: string[], index: number | undefined) =>
@@ -136,17 +226,20 @@ export function questionsFromCsv(text: string, makeKey: () => string): CsvParseR
     return { questions: [], warnings: ["That file looks empty."], skipped: 0 };
   }
 
-  // A header row is any first row whose first cell normalizes to a known column
-  // name; otherwise the first row is treated as data.
+  // A header row is any first row whose first or second cell normalizes to known column names
   const first = rows[0].map(normalizeHeader);
   const looksLikeHeader =
     first.includes("question") ||
+    first.includes("question english") ||
     first.includes("question no") ||
-    first.includes("option a");
+    first.includes("q no") ||
+    first.includes("type") ||
+    first.includes("option a") ||
+    first.includes("prompt");
 
   const header = looksLikeHeader ? rows[0] : null;
   const dataRows = looksLikeHeader ? rows.slice(1) : rows;
-  const { indices } = resolveColumns(header);
+  const mapping = resolveColumns(header, dataRows[0]);
 
   const questions: QuestionDraft[] = [];
   const warnings: string[] = [];
@@ -155,46 +248,151 @@ export function questionsFromCsv(text: string, makeKey: () => string): CsvParseR
   dataRows.forEach((row, index) => {
     // Line number as seen in a text editor, for warnings.
     const line = looksLikeHeader ? index + 2 : index + 1;
-    const prompt = cell(row, indices[0]);
-    const options = indices.slice(1).map((i) => cell(row, i));
 
-    if (prompt === "" && options.every((o) => o === "")) {
+    const english = cell(row, mapping.englishPromptCol);
+    const hinglish = cell(row, mapping.hinglishPromptCol);
+    const genericPrompt = cell(row, mapping.promptCol);
+
+    let prompt = genericPrompt;
+    if (english && hinglish) {
+      prompt = `${english}\n\n(${hinglish})`;
+    } else if (english) {
+      prompt = english;
+    } else if (hinglish) {
+      prompt = hinglish;
+    }
+
+    const typeRaw = cell(row, mapping.typeCol).toLowerCase();
+    const optionsRaw = mapping.optionCols
+      .map((colIdx) => cell(row, colIdx))
+      .filter((t) => t !== "");
+
+    const correctAnsRaw = cell(row, mapping.correctAnswerCol);
+    const correctOptRaw = cell(row, mapping.correctOptionCol);
+
+    // Skip totally blank rows
+    if (
+      !prompt &&
+      optionsRaw.length === 0 &&
+      !correctAnsRaw &&
+      !correctOptRaw
+    ) {
       skipped++;
       return;
     }
 
-    if (prompt === "") {
+    if (!prompt) {
       skipped++;
       warnings.push(`Row ${line} skipped: the question text is empty.`);
       return;
     }
 
-    const filled = options.filter((o) => o !== "");
-    if (filled.length < 2) {
-      warnings.push(
-        `Row ${line} ("${prompt.slice(0, 40)}${prompt.length > 40 ? "…" : ""}") has only ${filled.length} option — an MCQ needs at least two.`,
-      );
-    }
+    // Determine type: free_text, multiple_choice, or single_choice
+    const isExplicitFreeText =
+      typeRaw.includes("free") ||
+      typeRaw.includes("text") ||
+      typeRaw.includes("short");
 
-    // Options that are blank in the CSV are dropped rather than saved as empty
-    // choices the student could click.
-    questions.push({
-      key: makeKey(),
-      type: "mcq",
-      prompt,
-      options: options
-        .filter((o) => o !== "")
-        .map((text) => ({ id: makeKey(), text })),
-      // Nothing can be auto-detected from these columns, so the teacher picks the
-      // correct answer(s) in the editor before saving.
-      correctAnswer: [],
-      points: 1,
-    });
+    const isExplicitMulti =
+      typeRaw.includes("multi") ||
+      typeRaw.includes("multiple") ||
+      typeRaw.includes("check");
+
+    const isExplicitSingle =
+      typeRaw.includes("mcq") ||
+      typeRaw.includes("single") ||
+      typeRaw.includes("choice") ||
+      typeRaw.includes("radio");
+
+    const isFreeText =
+      isExplicitFreeText ||
+      (!isExplicitSingle && !isExplicitMulti && optionsRaw.length === 0 && Boolean(correctAnsRaw || correctOptRaw));
+
+    // Marks/Points
+    const marksRaw = cell(row, mapping.marksCol);
+    const points = marksRaw ? Math.max(1, parseInt(marksRaw, 10) || 1) : 1;
+
+    if (isFreeText) {
+      const rawAnswer = correctAnsRaw || correctOptRaw;
+      let accepted: string[] = [];
+      if (rawAnswer) {
+        if (rawAnswer.includes(";") || rawAnswer.includes("\n") || rawAnswer.includes("|")) {
+          accepted = rawAnswer
+            .split(/[;\n|]/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+        } else {
+          accepted = [rawAnswer.trim()];
+        }
+      }
+
+      questions.push({
+        key: makeKey(),
+        type: "free_text",
+        prompt,
+        options: [],
+        correctAnswer: accepted,
+        points,
+      });
+    } else {
+      if (optionsRaw.length < 2) {
+        warnings.push(
+          `Row ${line} ("${prompt.slice(0, 40)}${prompt.length > 40 ? "…" : ""}") has only ${optionsRaw.length} option — an MCQ needs at least two.`,
+        );
+      }
+
+      const optionObjs = optionsRaw.map((text) => ({ id: makeKey(), text }));
+      const correctAnswer: string[] = [];
+      let detectedMulti = false;
+
+      const correctOptClean = correctOptRaw.toUpperCase().trim();
+      // Support comma-separated letters for multi-select e.g. "A,C"
+      const letterParts = correctOptClean.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+      if (letterParts.length > 1) {
+        detectedMulti = true;
+        for (const part of letterParts) {
+          const letterIndex = ["A", "B", "C", "D", "E", "F"].indexOf(part);
+          if (letterIndex !== -1 && optionObjs[letterIndex]) {
+            correctAnswer.push(optionObjs[letterIndex].id);
+          }
+        }
+      } else {
+        const letterIndex = ["A", "B", "C", "D", "E", "F"].indexOf(correctOptClean);
+        if (letterIndex !== -1 && optionObjs[letterIndex]) {
+          correctAnswer.push(optionObjs[letterIndex].id);
+        } else {
+          const numIndex = parseInt(correctOptClean, 10);
+          if (!isNaN(numIndex) && numIndex >= 1 && optionObjs[numIndex - 1]) {
+            correctAnswer.push(optionObjs[numIndex - 1].id);
+          } else if (correctAnsRaw) {
+            const matched = optionObjs.find(
+              (o) => o.text.trim().toLowerCase() === correctAnsRaw.trim().toLowerCase(),
+            );
+            if (matched) {
+              correctAnswer.push(matched.id);
+            }
+          }
+        }
+      }
+
+      // Infer type: multi if comma-separated correct options, else single
+      const questionType: "single_choice" | "multiple_choice" =
+        detectedMulti || isExplicitMulti ? "multiple_choice" : "single_choice";
+
+      questions.push({
+        key: makeKey(),
+        type: questionType,
+        prompt,
+        options: optionObjs,
+        correctAnswer,
+        points,
+      });
+    }
   });
 
   if (questions.length === 0 && warnings.length === 0) {
     warnings.push(
-      "No questions found. Expected columns: question no, question, option a, option b, option c, option d.",
+      "No questions found. Make sure your CSV has question text and valid columns.",
     );
   }
 

@@ -8,6 +8,7 @@ import {
   Lock,
   ArrowRight,
   CheckCircle2,
+  GraduationCap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -95,9 +96,19 @@ export default function QuizzesPage() {
                         </Badge>
                       )}
                     </div>
-                    <p className="text-xs text-on-surface-variant truncate">
-                      {q.courseCode} · {q.courseName} · {q.totalQuestions} questions ·{" "}
-                      {q.durationMinutes} min
+                    <p className="text-xs text-on-surface-variant truncate flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        {q.courseCode} · {q.courseName}
+                      </span>
+                      {q.instructorName && (
+                        <span className="inline-flex items-center gap-1 text-primary/80 font-medium">
+                          <GraduationCap className="size-3 shrink-0" />
+                          {q.instructorName}
+                        </span>
+                      )}
+                      <span>
+                        · {q.totalQuestions} questions · {q.durationMinutes} min
+                      </span>
                     </p>
                   </div>
                 </Link>

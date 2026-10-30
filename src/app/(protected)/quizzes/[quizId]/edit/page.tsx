@@ -57,7 +57,9 @@ export default function EditQuizPage() {
                     { id: "true", text: "True" },
                     { id: "false", text: "False" },
                   ]
-                : qq.options || [],
+                : qq.type === "free_text"
+                  ? []
+                  : qq.options || [],
             correctAnswer: qq.correctAnswer || [],
             points: qq.points,
           })),

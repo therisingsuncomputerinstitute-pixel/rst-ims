@@ -54,7 +54,7 @@ export function normalizeQuestions(
   return questions.map((q) => ({
     type: q.type,
     prompt: q.prompt,
-    options: q.type === "mcq" ? q.options : undefined,
+    options: q.type === "free_text" ? undefined : q.options,
     correctAnswer:
       q.type === "free_text"
         ? (Array.isArray(q.correctAnswer) ? q.correctAnswer : [])
@@ -68,7 +68,7 @@ export function normalizeQuestions(
 function blankQuestion(): QuestionDraft {
   return {
     key: uid(),
-    type: "mcq",
+    type: "single_choice",
     prompt: "",
     options: [
       { id: uid(), text: "" },
@@ -151,7 +151,16 @@ export function QuizEditor({
 
     const notes = [...warnings];
     if (skipped > 0) notes.push(`${skipped} empty row(s) skipped.`);
-    notes.push("Pick the correct answer for each question, then save.");
+    const missingAnswers = imported.filter((q) => q.correctAnswer.length === 0);
+    if (missingAnswers.length > 0) {
+      notes.push(
+        `Select the correct answer for ${missingAnswers.length} question(s), then save.`,
+      );
+    } else {
+      notes.push(
+        "All questions, options, types and answers loaded from CSV. Review and save!",
+      );
+    }
     setCsvNote(notes.join(" "));
   };
 
@@ -325,6 +334,10 @@ export function QuizEditor({
                 value={q.type}
                 onValueChange={(v) => {
                   const type = v as QuizQuestionType;
+                  const needsOptions =
+                    type === "single_choice" ||
+                    type === "multiple_choice" ||
+                    type === "mcq";
                   updateQuestion(q.key, {
                     type,
                     correctAnswer: [],
@@ -336,14 +349,16 @@ export function QuizEditor({
                           ]
                         : type === "free_text"
                           ? []
-                          : q.options.length
+                          : needsOptions && q.options.length
                             ? q.options
-                            : [
-                                { id: uid(), text: "" },
-                                { id: uid(), text: "" },
-                                { id: uid(), text: "" },
-                                { id: uid(), text: "" },
-                              ],
+                            : needsOptions
+                              ? [
+                                  { id: uid(), text: "" },
+                                  { id: uid(), text: "" },
+                                  { id: uid(), text: "" },
+                                  { id: uid(), text: "" },
+                                ]
+                              : [],
                   });
                 }}
               >
@@ -351,9 +366,10 @@ export function QuizEditor({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="mcq">Multiple choice</SelectItem>
+                  <SelectItem value="single_choice">Single choice (pick one)</SelectItem>
+                  <SelectItem value="multiple_choice">Multiple choice (pick many)</SelectItem>
                   <SelectItem value="true_false">True / False</SelectItem>
-                  <SelectItem value="free_text">Free text</SelectItem>
+                  <SelectItem value="free_text">Free text (typed answer)</SelectItem>
                 </SelectContent>
               </Select>
             </CardTitle>
@@ -419,14 +435,25 @@ export function QuizEditor({
             ) : (
             <div>
               <Label className="mb-2 block">
-                {q.type === "true_false" ? "Correct answer" : "Options (select the correct one/ones)"}
+                {q.type === "true_false"
+                  ? "Correct answer"
+                  : q.type === "multiple_choice"
+                    ? "Options — check ALL correct answers (student must select all)"
+                    : "Options — check the ONE correct answer"}
               </Label>
               <div className="space-y-2">
                 {q.options.map((o) => {
                   const isCorrect = q.correctAnswer.includes(o.id);
+                  const isMulti =
+                    q.type === "multiple_choice";
+                  const isSingle =
+                    q.type === "single_choice" ||
+                    q.type === "true_false" ||
+                    q.type === "mcq";
                   return (
                     <div key={o.id} className="flex items-center gap-2">
-                      {q.type === "mcq" ? (
+                      {isMulti ? (
+                        /* Checkbox for multiple_choice */
                         <button
                           type="button"
                           onClick={() => toggleMcqCorrect(q.key, o.id)}
@@ -436,11 +463,12 @@ export function QuizEditor({
                               ? "bg-emerald-500 border-emerald-500 text-white"
                               : "border-outline-variant text-transparent hover:border-emerald-400",
                           )}
-                          title="Mark as correct answer"
+                          title="Mark as correct answer (multiple allowed)"
                         >
                           ✓
                         </button>
                       ) : (
+                        /* Radio for single_choice / true_false / legacy mcq */
                         <button
                           type="button"
                           onClick={() =>
@@ -449,12 +477,17 @@ export function QuizEditor({
                             })
                           }
                           className={cn(
-                            "size-5 shrink-0 rounded-full border flex items-center justify-center transition-colors",
+                            "size-5 shrink-0 rounded-full border-2 flex items-center justify-center transition-colors",
                             isCorrect
-                              ? "bg-emerald-500 border-emerald-500"
-                              : "border-outline-variant",
+                              ? "border-emerald-500"
+                              : "border-outline-variant hover:border-emerald-400",
                           )}
-                        />
+                          title="Mark as the correct answer (only one)"
+                        >
+                          {isCorrect && (
+                            <span className="size-2.5 rounded-full bg-emerald-500" />
+                          )}
+                        </button>
                       )}
                       <Input
                         value={o.text}
@@ -474,7 +507,7 @@ export function QuizEditor({
                   );
                 })}
               </div>
-              {q.type === "mcq" && (
+              {(q.type === "single_choice" || q.type === "multiple_choice" || q.type === "mcq") && (
                 <Button
                   variant="ghost"
                   size="sm"

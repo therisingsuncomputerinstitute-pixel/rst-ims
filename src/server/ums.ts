@@ -716,7 +716,13 @@ export async function removeEnrollment(courseId: string, studentId: string) {
 // Quizzes
 // ─────────────────────────────────────────────────────────────────────────
 
-export type QuizQuestionType = "mcq" | "true_false" | "free_text";
+export type QuizQuestionType =
+  | "single_choice"
+  | "multiple_choice"
+  | "true_false"
+  | "free_text"
+  /** @deprecated alias for single_choice – kept for existing DB rows */
+  | "mcq";
 
 export type QuizQuestionInput = {
   type: QuizQuestionType;
@@ -806,10 +812,25 @@ function gradeQuestion(
     };
   }
 
-  const isCorrect =
-    selected.length > 0 &&
-    correct.length === selected.length &&
-    correct.every((c) => selected.includes(c));
+  const isCorrect = (() => {
+    // single_choice (and legacy "mcq" rows): student must choose exactly the one correct option
+    if (q.type === "single_choice" || q.type === "mcq" || q.type === "true_false") {
+      return (
+        selected.length === 1 &&
+        correct.length > 0 &&
+        correct.includes(selected[0])
+      );
+    }
+    // multiple_choice: student must select all correct options and nothing else
+    if (q.type === "multiple_choice") {
+      return (
+        selected.length > 0 &&
+        correct.length === selected.length &&
+        correct.every((c) => selected.includes(c))
+      );
+    }
+    return false;
+  })();
   return {
     questionId: q.id,
     questionText: q.prompt,
@@ -842,7 +863,10 @@ async function insertQuestions(
         quizId,
         type: q.type,
         prompt: q.prompt.trim(),
-        options: q.type === "mcq" ? (q.options ?? []) : null,
+        options:
+          q.type === "free_text"
+            ? null
+            : (q.options ?? []),
         correctAnswer: accepted,
         points: q.points ?? 1,
         orderIndex: i,
@@ -3194,6 +3218,7 @@ export type MyQuizItem = {
   courseId: string;
   courseCode: string;
   courseName: string;
+  instructorName?: string | null;
   title: string;
   durationMinutes: number;
   totalQuestions: number;
@@ -3236,7 +3261,7 @@ export async function listMyQuizzes(): Promise<MyQuizItem[]> {
         isAdmin ? undefined : e(q.isPublished, true),
       ),
     with: {
-      course: { columns: { id: true, name: true, code: true } },
+      course: { columns: { id: true, name: true, code: true, instructorName: true } },
       attempts: {
         columns: { id: true, status: true, scoreEarned: true, scoreTotal: true },
         where: isAdmin
@@ -3265,6 +3290,7 @@ export async function listMyQuizzes(): Promise<MyQuizItem[]> {
       courseId: r.courseId,
       courseCode: c?.code ?? "",
       courseName: c?.name ?? "",
+      instructorName: c?.instructorName ?? null,
       title: r.title,
       durationMinutes: r.durationMinutes ?? 0,
       totalQuestions: r.totalQuestions ?? 0,
@@ -3283,20 +3309,35 @@ async function getCourseIdMap(
   isAdmin: boolean,
   orgId: string,
   userId: string,
-): Promise<Map<string, { name: string; code: string }>> {
+): Promise<Map<string, { name: string; code: string; instructorName: string | null }>> {
   if (isAdmin) {
     const rows = await db.query.courses.findMany({
       where: (c, { eq: e }) => e(c.organizationId, orgId),
-      columns: { id: true, name: true, code: true },
+      columns: { id: true, name: true, code: true, instructorName: true },
     });
-    return new Map(rows.map((c) => [c.id, { name: c.name, code: c.code }]));
+    return new Map(
+      rows.map((c) => [
+        c.id,
+        { name: c.name, code: c.code, instructorName: c.instructorName ?? null },
+      ]),
+    );
   }
   const rows = await db
-    .select({ id: courses.id, name: courses.name, code: courses.code })
+    .select({
+      id: courses.id,
+      name: courses.name,
+      code: courses.code,
+      instructorName: courses.instructorName,
+    })
     .from(courseEnrollments)
     .innerJoin(courses, eq(courseEnrollments.courseId, courses.id))
     .where(eq(courseEnrollments.studentId, userId));
-  return new Map(rows.map((c) => [c.id, { name: c.name, code: c.code }]));
+  return new Map(
+    rows.map((c) => [
+      c.id,
+      { name: c.name, code: c.code, instructorName: c.instructorName ?? null },
+    ]),
+  );
 }
 
 export type MyAssignmentItem = {
@@ -3304,6 +3345,7 @@ export type MyAssignmentItem = {
   courseId: string;
   courseCode: string;
   courseName: string;
+  instructorName?: string | null;
   title: string;
   maxScore: number;
   dueAt: Date | null;
@@ -3343,11 +3385,13 @@ export async function listMyAssignments(): Promise<MyAssignmentItem[]> {
 
   return visibleRows.map((r) => {
     const sub = r.submissions[0];
+    const c = courseMap.get(r.courseId);
     return {
       id: r.id,
       courseId: r.courseId,
-      courseCode: courseMap.get(r.courseId)?.code ?? "",
-      courseName: courseMap.get(r.courseId)?.name ?? "",
+      courseCode: c?.code ?? "",
+      courseName: c?.name ?? "",
+      instructorName: c?.instructorName ?? null,
       title: r.title,
       maxScore: r.maxScore ?? 0,
       dueAt: r.dueAt,

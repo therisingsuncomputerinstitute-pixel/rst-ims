@@ -13,6 +13,7 @@ import {
   Loader2,
   Search,
   TriangleAlert,
+  GraduationCap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -153,8 +154,14 @@ export default function CoursesPage() {
                   <p className="font-black text-on-surface group-hover:text-primary transition-colors text-lg">
                     {c.name}
                   </p>
+                  {c.instructorName && (
+                    <p className="text-xs font-semibold text-primary/80 mt-0.5 flex items-center gap-1">
+                      <GraduationCap className="size-3 shrink-0" />
+                      {c.instructorName}
+                    </p>
+                  )}
                   <p className="text-xs text-on-surface-variant mt-1 line-clamp-2">
-                    {c.description || c.instructorName || "No description"}
+                    {c.description || "No description"}
                   </p>
                 </Link>
                 {c.term && (

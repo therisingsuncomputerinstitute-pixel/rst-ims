@@ -1273,8 +1273,10 @@ export const quizQuestions = pgTable(
     quizId: uuid("quiz_id")
       .notNull()
       .references(() => quizzes.id, { onDelete: "cascade" }),
-    type: text("type", { enum: ["mcq", "true_false", "free_text"] })
-      .default("mcq")
+    type: text("type", {
+      enum: ["single_choice", "multiple_choice", "mcq", "true_false", "free_text"],
+    })
+      .default("single_choice")
       .notNull(),
     prompt: text("prompt").notNull(),
     options: jsonb("options"), // [{ id: string, text: string }]

@@ -143,9 +143,13 @@ export default function QuizPage() {
         <IntroView
           quiz={quiz}
           onStart={async (key?: string) => {
-            // Enter full screen here: it must happen inside the click gesture,
-            // and this is the only place the student clicks "Start".
-            if (!document.fullscreenElement) {
+            // Enter full screen on click gesture (desktop only; mobile browsers
+            // block the fullscreen API so we skip it silently).
+            const isTouch =
+              typeof window !== "undefined" &&
+              ("ontouchstart" in window || navigator.maxTouchPoints > 1) &&
+              !window.matchMedia("(pointer: fine)").matches;
+            if (!isTouch && !document.fullscreenElement) {
               document.documentElement
                 .requestFullscreen({ navigationUI: "hide" })
                 .catch(() => {});
@@ -525,7 +529,11 @@ function AttemptView({
   const choose = (qid: string, value: string) => {
     if (isPaused || isTerminated || secondsLeft <= 0 || submitting) return;
     const q = questions.find((x) => x.id === qid);
-    const single = q?.type === "true_false";
+    // single_choice, true_false, and legacy mcq rows = pick exactly one
+    const single =
+      q?.type === "true_false" ||
+      q?.type === "single_choice" ||
+      q?.type === "mcq";
     setAnswers((a) => ({
       ...a,
       [qid]: single
@@ -555,20 +563,21 @@ function AttemptView({
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="space-y-5"
+      className="space-y-4"
     >
-      <div className="sticky top-4 z-10 flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/60 bg-surface-container/95 backdrop-blur p-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <Badge variant="secondary" className="rounded-full font-mono">
+      {/* Sticky header — compact on mobile */}
+      <div className="sticky top-0 sm:top-4 z-10 flex items-center justify-between gap-3 rounded-none sm:rounded-2xl border-b sm:border border-outline-variant/60 bg-surface-container/95 backdrop-blur px-4 py-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Badge variant="secondary" className="rounded-full font-mono hidden xs:flex">
             {(quiz as any).course?.code}
           </Badge>
           <p className="text-sm font-bold text-on-surface truncate">
             {(quiz as any).title}
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <ProctorBadge count={proctor.violationCount} />
-          <p className="text-xs text-on-surface-variant hidden sm:block">
+          <p className="text-xs text-on-surface-variant hidden md:block">
             {answered}/{questions.length} answered
           </p>
           <div
@@ -582,6 +591,14 @@ function AttemptView({
             {mm}:{ss}
           </div>
         </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full h-1 bg-outline-variant/30 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-primary transition-all duration-500"
+          style={{ width: `${Math.round((answered / Math.max(questions.length, 1)) * 100)}%` }}
+        />
       </div>
 
       {q ? (
@@ -612,30 +629,54 @@ function AttemptView({
                 />
               </div>
             ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
+              {q.type === "multiple_choice" && (
+                <p className="text-xs text-on-surface-variant mb-1 italic">
+                  Select all correct answers that apply.
+                </p>
+              )}
               {q.options?.map?.((o: any) => {
                 const sel = (answers[q.id] ?? []).includes(o.id);
+                const isMulti = q.type === "multiple_choice";
                 return (
                   <button
                     key={o.id}
                     onClick={() => choose(q.id, o.id)}
                     disabled={isPaused || isTerminated || secondsLeft <= 0 || submitting}
                     className={cn(
-                      "w-full text-left rounded-2xl border p-3.5 flex items-center gap-3 transition-all",
+                      // min-h-14 ensures comfortable touch target on mobile
+                      "w-full text-left rounded-2xl border p-4 min-h-14 flex items-center gap-3 transition-all active:scale-[0.98]",
                       sel
                         ? "border-primary bg-primary/10"
                         : "border-outline-variant/60 hover:border-primary/40",
                     )}
                   >
-                    <span
-                      className={cn(
-                        "size-5 shrink-0 rounded-md border flex items-center justify-center text-[10px] transition-colors",
-                        sel ? "bg-primary border-primary text-primary-foreground" : "border-outline-variant",
-                      )}
-                    >
-                      {q.type === "true_false" ? (sel ? "✓" : "") : sel ? "✓" : ""}
-                    </span>
-                    <span className="text-sm font-medium text-on-surface">
+                    {isMulti ? (
+                      /* Checkbox indicator for multiple_choice */
+                      <span
+                        className={cn(
+                          "size-6 shrink-0 rounded-md border-2 flex items-center justify-center text-xs font-black transition-colors",
+                          sel
+                            ? "bg-primary border-primary text-primary-foreground"
+                            : "border-outline-variant",
+                        )}
+                      >
+                        {sel ? "✓" : ""}
+                      </span>
+                    ) : (
+                      /* Radio indicator for single_choice / true_false / mcq */
+                      <span
+                        className={cn(
+                          "size-6 shrink-0 rounded-full border-2 flex items-center justify-center transition-colors",
+                          sel ? "border-primary" : "border-outline-variant",
+                        )}
+                      >
+                        {sel && (
+                          <span className="size-3 rounded-full bg-primary" />
+                        )}
+                      </span>
+                    )}
+                    <span className="text-sm font-medium text-on-surface leading-snug">
                       {o.text}
                     </span>
                   </button>
@@ -647,19 +688,22 @@ function AttemptView({
         </Card>
       ) : null}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <Button
           variant="outline"
-          className="rounded-full"
+          className="rounded-full flex-1 sm:flex-none"
           onClick={() => setCurrent((c) => Math.max(0, c - 1))}
           disabled={current === 0}
         >
-          <ChevronLeft className="size-4 mr-1" /> Previous
+          <ChevronLeft className="size-4 mr-1" /> Prev
         </Button>
+        <span className="text-xs text-on-surface-variant font-semibold">
+          {current + 1} / {questions.length}
+        </span>
         <Button
           onClick={() => setCurrent((c) => Math.min(questions.length - 1, c + 1))}
           disabled={current === questions.length - 1}
-          className="rounded-full"
+          className="rounded-full flex-1 sm:flex-none"
         >
           Next <ChevronRight className="size-4 ml-1" />
         </Button>
@@ -671,7 +715,7 @@ function AttemptView({
             key={qq.id}
             onClick={() => setCurrent(i)}
             className={cn(
-              "size-9 rounded-xl text-xs font-black transition-colors border",
+              "size-10 rounded-xl text-xs font-black transition-colors border",
               current === i
                 ? "bg-primary text-primary-foreground border-primary"
                 : isAnswered(qq)
@@ -1042,11 +1086,15 @@ function AdminQuizView({
                 </p>
                 <Badge variant="secondary" className="rounded-full shrink-0">
                   {q.points} pts ·{" "}
-                  {q.type === "mcq"
-                    ? "MCQ"
-                    : q.type === "free_text"
-                      ? "Free text"
-                      : "True/False"}
+                  {q.type === "single_choice"
+                    ? "Single choice"
+                    : q.type === "multiple_choice"
+                      ? "Multi-select"
+                      : q.type === "mcq"
+                        ? "Single choice"
+                        : q.type === "free_text"
+                          ? "Free text"
+                          : "True/False"}
                 </Badge>
                 {stats?.perQuestion && (
                   <Badge variant="outline" className="rounded-full shrink-0 text-emerald-500">
@@ -1058,7 +1106,7 @@ function AdminQuizView({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
-                {q.type === "mcq" &&
+                {(q.type === "mcq" || q.type === "single_choice" || q.type === "multiple_choice") &&
                   q.options?.map((o: any) => (
                     <span
                       key={o.id}
