@@ -700,13 +700,112 @@ export async function removeEnrollment(courseId: string, studentId: string) {
 // Quizzes
 // ─────────────────────────────────────────────────────────────────────────
 
+export type QuizQuestionType = "mcq" | "true_false" | "free_text";
+
 export type QuizQuestionInput = {
-  type: "mcq" | "true_false";
+  type: QuizQuestionType;
   prompt: string;
   options?: { id: string; text: string }[];
   correctAnswer?: string[] | [boolean][number][];
   points?: number;
 };
+
+function normalizeFreeText(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizeFreeTextPermissive(value: string) {
+  return value
+    .trim()
+    .replace(/[.?!,;:]+$/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+type GradedAnswer = {
+  questionId: string;
+  questionText: string;
+  selected: string[];
+  selectedText: string;
+  text: string | null;
+  correct: string[];
+  correctText: string;
+  points: number;
+  isCorrect: boolean;
+};
+
+function gradeQuestion(
+  q: {
+    id: string;
+    type: string;
+    prompt: string;
+    options: unknown;
+    correctAnswer: unknown;
+    points: number;
+  },
+  answer: { selected?: string[]; text?: string | null } | undefined,
+): GradedAnswer {
+  const correct = Array.isArray(q.correctAnswer)
+    ? (q.correctAnswer as string[]).map((c) => String(c))
+    : [];
+  const selected = Array.isArray(answer?.selected) ? answer.selected : [];
+  const typed = (
+    (typeof answer?.text === "string" ? answer.text : "") ||
+    (q.type === "free_text" && selected.length > 0 ? selected[0] : "")
+  ).trim();
+  const textOf = (ids: string[]) =>
+    (q.options as { id: string; text: string }[])?.length
+      ? (q.options as { id: string; text: string }[])
+          .filter((o) => ids.includes(o.id))
+          .map((o) => o.text)
+          .join(", ")
+      : ids.join(", ");
+
+  if (q.type === "free_text") {
+    const accepted = correct.map((c) => String(c).trim()).filter(Boolean);
+    const normTyped = normalizeFreeText(typed);
+    const normPermissiveTyped = normalizeFreeTextPermissive(typed);
+    const isCorrect =
+      typed.length > 0 &&
+      accepted.some((acc) => {
+        const normAcc = normalizeFreeText(acc);
+        const normPermissiveAcc = normalizeFreeTextPermissive(acc);
+        return (
+          normAcc === normTyped ||
+          normPermissiveAcc === normPermissiveTyped ||
+          normAcc === normPermissiveTyped ||
+          normPermissiveAcc === normTyped
+        );
+      });
+    return {
+      questionId: q.id,
+      questionText: q.prompt,
+      selected,
+      selectedText: typed,
+      text: typed || null,
+      correct: accepted,
+      correctText: accepted.join(" / "),
+      points: q.points,
+      isCorrect,
+    };
+  }
+
+  const isCorrect =
+    selected.length > 0 &&
+    correct.length === selected.length &&
+    correct.every((c) => selected.includes(c));
+  return {
+    questionId: q.id,
+    questionText: q.prompt,
+    selected,
+    selectedText: textOf(selected),
+    text: answer?.text ?? null,
+    correct,
+    correctText: textOf(correct),
+    points: q.points,
+    isCorrect,
+  };
+}
 
 async function insertQuestions(
   quizId: string,
@@ -714,18 +813,25 @@ async function insertQuestions(
 ) {
   if (!questions.length) return;
   await db.insert(quizQuestions).values(
-    questions.map((q, i) => ({
-      quizId,
-      type: q.type,
-      prompt: q.prompt.trim(),
-      options: q.type === "mcq" ? (q.options ?? []) : null,
-      correctAnswer:
-        q.type === "true_false"
-          ? q.correctAnswer
-          : (q.correctAnswer ?? ([] as string[])),
-      points: q.points ?? 1,
-      orderIndex: i,
-    })),
+    questions.map((q, i) => {
+      const accepted =
+        q.type === "free_text"
+          ? (q.correctAnswer ?? [])
+              .map((c) => String(c).trim())
+              .filter(Boolean)
+          : q.type === "true_false"
+            ? q.correctAnswer
+            : (q.correctAnswer ?? ([] as string[]));
+      return {
+        quizId,
+        type: q.type,
+        prompt: q.prompt.trim(),
+        options: q.type === "mcq" ? (q.options ?? []) : null,
+        correctAnswer: accepted,
+        points: q.points ?? 1,
+        orderIndex: i,
+      };
+    }),
   );
 }
 
@@ -825,6 +931,7 @@ export async function listQuizAttempts(quizId: string) {
       scoreEarned: quizAttempts.scoreEarned,
       scoreTotal: quizAttempts.scoreTotal,
       status: quizAttempts.status,
+      answers: quizAttempts.answers,
       violations: quizAttempts.violations,
       startedAt: quizAttempts.startedAt,
       submittedAt: quizAttempts.submittedAt,
@@ -1050,6 +1157,29 @@ export async function startQuizAttempt(quizId: string, accessKey?: string) {
   return { attempt, fresh: true };
 }
 
+export async function saveQuizProgress(
+  attemptId: string,
+  answers: { questionId: string; selected?: string[]; text?: string }[],
+) {
+  const u = await requireUser();
+  const attempt = await db.query.quizAttempts.findFirst({
+    where: (a, { eq: e }) => e(a.id, attemptId),
+    columns: { id: true, studentId: true, status: true },
+  });
+  if (!attempt) throw new Error("Attempt not found.");
+  if (attempt.studentId !== u.id && u.role !== "admin") {
+    throw new Error("Unauthorized.");
+  }
+  if (attempt.status === "submitted") return { ok: true, submitted: true };
+
+  await db
+    .update(quizAttempts)
+    .set({ answers })
+    .where(eq(quizAttempts.id, attemptId));
+
+  return { ok: true };
+}
+
 export async function submitQuizAttempt(
   attemptId: string,
   answers: { questionId: string; selected: string[]; text?: string }[],
@@ -1066,41 +1196,31 @@ export async function submitQuizAttempt(
 
   const questions = await db.query.quizQuestions.findMany({
     where: (q, { eq: e }) => e(q.quizId, attempt.quizId),
+    orderBy: (q, { asc: a }) => [a(q.orderIndex)],
   });
+
+  const submittedAnswers =
+    Array.isArray(answers) && answers.length > 0
+      ? answers
+      : Array.isArray(attempt.answers)
+        ? (attempt.answers as any[])
+        : [];
 
   let earned = 0;
   let total = 0;
   const normalized = questions.map((q) => {
-    const answer = answers.find((a) => a.questionId === q.id);
-    const correct = Array.isArray(q.correctAnswer)
-      ? (q.correctAnswer as string[])
-      : [];
-    const selected = answer?.selected ?? ([] as string[]);
-    const isCorrect =
-      correct.length === selected.length &&
-      correct.every((c) => selected.includes(c));
-    const textOf = (ids: string[]) =>
-      (q.options as { id: string; text: string }[])?.length
-        ? (q.options as { id: string; text: string }[])
-            .filter((o) => ids.includes(o.id))
-            .map((o) => o.text)
-            .join(", ")
-        : ids.join(", ");
+    const rawAnswer =
+      submittedAnswers.find((a: any) => a?.questionId === q.id) ??
+      (Array.isArray(attempt.answers)
+        ? (attempt.answers as any[]).find((a: any) => a?.questionId === q.id)
+        : undefined);
+    const graded = gradeQuestion(q, rawAnswer);
     total += q.points;
-    if (isCorrect) earned += q.points;
-    return {
-      questionId: q.id,
-      questionText: q.prompt,
-      selected,
-      selectedText: textOf(selected),
-      text: answer?.text ?? null,
-      correct,
-      correctText: textOf(correct),
-      points: q.points,
-      isCorrect,
-    };
+    if (graded.isCorrect) earned += q.points;
+    return graded;
   });
 
+  const now = new Date();
   await db
     .update(quizAttempts)
     .set({
@@ -1108,11 +1228,20 @@ export async function submitQuizAttempt(
       scoreEarned: earned,
       scoreTotal: total,
       status: "submitted",
-      submittedAt: new Date(),
+      submittedAt: now,
     })
     .where(eq(quizAttempts.id, attemptId));
 
-  return { attempt: { ...attempt, status: "submitted", scoreEarned: earned, scoreTotal: total } };
+  return {
+    attempt: {
+      ...attempt,
+      status: "submitted",
+      scoreEarned: earned,
+      scoreTotal: total,
+      answers: normalized,
+      submittedAt: now,
+    },
+  };
 }
 
 export async function getMyAttempt(quizId: string) {
@@ -1143,29 +1272,12 @@ export async function reScoreQuizAttempts(quizId: string) {
     let total = 0;
     const normalized = questions.map((q) => {
       const existing = oldAnswers.find((a: any) => a.questionId === q.id);
-      const correct = Array.isArray(q.correctAnswer) ? (q.correctAnswer as string[]) : [];
-      const selected: string[] = existing?.selected ?? [];
-      const isCorrect =
-        correct.length === selected.length && correct.every((c) => selected.includes(c));
-      const textOf = (ids: string[]) =>
-        (q.options as { id: string; text: string }[])?.length
-          ? (q.options as { id: string; text: string }[])
-              .filter((o) => ids.includes(o.id))
-              .map((o) => o.text)
-              .join(", ")
-          : ids.join(", ");
+      const graded = gradeQuestion(q, existing);
       total += q.points;
-      if (isCorrect) earned += q.points;
+      if (graded.isCorrect) earned += q.points;
       return {
-        questionId: q.id,
+        ...graded,
         questionText: existing?.questionText ?? q.prompt,
-        selected,
-        selectedText: textOf(selected),
-        text: existing?.text ?? null,
-        correct,
-        correctText: textOf(correct),
-        points: q.points,
-        isCorrect,
       };
     });
 

@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
  *
  * While active it keeps the attempt in full screen, reports any switch to
  * another tab or window, blocks keyboard input, and blocks right-click.
- * Questions are multiple-choice, so nothing needs typing.
+ * Multiple-choice questions stay mouse-only. Free-text answer fields are
+ * marked with data-quiz-answer so typing there is allowed.
  */
 
 export type ProctorViolation = {
@@ -93,10 +94,15 @@ export function useQuizProctor(
     };
   }, [active, record]);
 
-  // Block keyboard AND right-click
+  // Block keyboard AND right-click, except inside free-text answer fields.
   useEffect(() => {
     if (!active) return;
+    const inAnswerField = (target: EventTarget | null) => {
+      const el = target instanceof HTMLElement ? target : null;
+      return Boolean(el?.closest("[data-quiz-answer]"));
+    };
     const blockKey = (e: Event) => {
+      if (inAnswerField(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
       record("keyboard");
@@ -206,7 +212,7 @@ export function ProctorWarning({
     tab_switch: "Switching to another tab or window was detected. This is recorded on your attempt.",
     window_blur: "You left the quiz window. This is recorded on your attempt.",
     fullscreen_exit: "You left full screen. Use the Resume button to continue the quiz.",
-    keyboard: "Keyboard use is not allowed during this quiz. Only the mouse can be used.",
+    keyboard: "Keyboard use is not allowed except in free-text answer boxes.",
     right_click: "Right-clicking is not allowed during this quiz.",
   };
 

@@ -29,6 +29,8 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDelete } from "@/components/ums/confirm-delete";
 import {
   FullscreenGuard,
@@ -49,6 +51,7 @@ import {
   getMyAttempt,
   startQuizAttempt,
   submitQuizAttempt,
+  saveQuizProgress,
   recordQuizViolation,
   listQuizAttempts,
   toggleQuizPublish,
@@ -241,7 +244,9 @@ function IntroView({
               </li>
               <li className="flex items-start gap-2">
                 <MousePointerClick className="size-3.5 mt-0.5 shrink-0 text-primary" />
-                Only the mouse works — the keyboard is disabled.
+                {(quiz as any).questions?.some?.((q: any) => q.type === "free_text")
+                  ? "The keyboard is only allowed in free-text answer boxes."
+                  : "Only the mouse works — the keyboard is disabled."}
               </li>
               <li className="flex items-start gap-2">
                 <Eye className="size-3.5 mt-0.5 shrink-0 text-primary" />
@@ -314,20 +319,115 @@ function AttemptView({
   onDone,
 }: {
   quiz: QuizData;
-  attempt: { id: string; status: string; warningLimit?: number };
+  attempt: {
+    id: string;
+    status: string;
+    warningLimit?: number;
+    startedAt?: Date | string;
+    answers?: any[];
+  };
   onDone: (a: any) => void;
 }) {
   const questions = (quiz as any).questions as any[];
-  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [answers, setAnswers] = useState<Record<string, string[]>>(() => {
+    const map: Record<string, string[]> = {};
+    if (Array.isArray(attempt?.answers)) {
+      for (const a of attempt.answers) {
+        if (a?.questionId && Array.isArray(a.selected) && a.selected.length > 0) {
+          map[a.questionId] = a.selected;
+        }
+      }
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const local = localStorage.getItem(`quiz_answers_${attempt.id}`);
+        if (local) {
+          Object.assign(map, JSON.parse(local));
+        }
+      } catch {}
+    }
+    return map;
+  });
+
+  const [textAnswers, setTextAnswers] = useState<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    if (Array.isArray(attempt?.answers)) {
+      for (const a of attempt.answers) {
+        if (a?.questionId && typeof a.text === "string" && a.text) {
+          map[a.questionId] = a.text;
+        }
+      }
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const local = localStorage.getItem(`quiz_text_answers_${attempt.id}`);
+        if (local) {
+          Object.assign(map, JSON.parse(local));
+        }
+      } catch {}
+    }
+    return map;
+  });
+
   const [current, setCurrent] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isTerminated, setIsTerminated] = useState(false);
   const [warningLimit, setWarningLimit] = useState(attempt.warningLimit ?? 3);
-  const [secondsLeft, setSecondsLeft] = useState(
-    (quiz as any).durationMinutes * 60,
-  );
+
+  const durationSeconds = Math.max(1, ((quiz as any).durationMinutes ?? 15) * 60);
+
+  const calculateSecondsLeft = useCallback(() => {
+    if (attempt?.startedAt) {
+      const startMs = new Date(attempt.startedAt).getTime();
+      const elapsedSeconds = Math.floor((Date.now() - startMs) / 1000);
+      return Math.max(0, durationSeconds - Math.max(0, elapsedSeconds));
+    }
+    return durationSeconds;
+  }, [attempt?.startedAt, durationSeconds]);
+
+  const [secondsLeft, setSecondsLeft] = useState(calculateSecondsLeft);
+
   const submittedRef = useRef(false);
+  const answersRef = useRef(answers);
+  const textAnswersRef = useRef(textAnswers);
+  answersRef.current = answers;
+  textAnswersRef.current = textAnswers;
+
+  // Persist answers to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `quiz_answers_${attempt.id}`,
+        JSON.stringify(answers),
+      );
+    } catch {}
+  }, [answers, attempt.id]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `quiz_text_answers_${attempt.id}`,
+        JSON.stringify(textAnswers),
+      );
+    } catch {}
+  }, [textAnswers, attempt.id]);
+
+  // Debounced auto-save progress to DB
+  useEffect(() => {
+    if (isPaused || isTerminated || submittedRef.current) return;
+    const timer = setTimeout(() => {
+      const currentSelected = answersRef.current;
+      const currentTyped = textAnswersRef.current;
+      const payload = questions.map((q) => ({
+        questionId: q.id,
+        selected: currentSelected[q.id] ?? [],
+        text: currentTyped[q.id] ?? "",
+      }));
+      void saveQuizProgress(attempt.id, payload).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [answers, textAnswers, attempt.id, questions, isPaused, isTerminated]);
 
   const proctor = useQuizProctor(!isPaused && !isTerminated, async () => {
     try {
@@ -366,22 +466,63 @@ function AttemptView({
     return () => clearInterval(poll);
   }, [attempt.id]);
 
+  const handleSubmit = useCallback(async () => {
+    if (submittedRef.current) return;
+    submittedRef.current = true;
+    setSubmitting(true);
+    try {
+      const selected = answersRef.current;
+      const typed = textAnswersRef.current;
+      const res = await submitQuizAttempt(
+        attempt.id,
+        questions.map((q) => ({
+          questionId: q.id,
+          selected: selected[q.id] ?? [],
+          text: typed[q.id] ?? "",
+        })),
+      );
+      try {
+        localStorage.removeItem(`quiz_answers_${attempt.id}`);
+        localStorage.removeItem(`quiz_text_answers_${attempt.id}`);
+      } catch {}
+      toast.success("Quiz submitted!");
+      onDone(res.attempt);
+    } catch (e: any) {
+      submittedRef.current = false;
+      toast.error(e.message || "Failed to submit quiz");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [attempt.id, questions, onDone]);
+
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+
+  // Countdown timer
   useEffect(() => {
+    if (secondsLeft <= 0) {
+      if (!submittedRef.current) {
+        void handleSubmitRef.current();
+      }
+      return;
+    }
+
     const t = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1 && !submittedRef.current) {
-          clearInterval(t);
-          handleSubmit();
+      const remaining = calculateSecondsLeft();
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(t);
+        if (!submittedRef.current) {
+          void handleSubmitRef.current();
         }
-        return s - 1;
-      });
+      }
     }, 1000);
+
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [calculateSecondsLeft, secondsLeft <= 0]);
 
   const choose = (qid: string, value: string) => {
-    if (isPaused || isTerminated) return;
+    if (isPaused || isTerminated || secondsLeft <= 0 || submitting) return;
     const q = questions.find((x) => x.id === qid);
     const single = q?.type === "true_false";
     setAnswers((a) => ({
@@ -394,34 +535,18 @@ function AttemptView({
     }));
   };
 
-  const handleSubmit = useCallback(async () => {
-    if (submittedRef.current) return;
-    submittedRef.current = true;
-    setSubmitting(true);
-    try {
-      const res = await submitQuizAttempt(
-        attempt.id,
-        questions.map((q) => ({
-          questionId: q.id,
-          selected: answers[q.id] ?? [],
-        })),
-      );
-      toast.success("Quiz submitted!");
-      onDone(res.attempt);
-    } catch (e: any) {
-      submittedRef.current = false;
-      toast.error(e.message || "Failed to submit quiz");
-    } finally {
-      setSubmitting(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attempt.id, questions, answers, onDone]);
+  const typeAnswer = (qid: string, value: string) => {
+    if (isPaused || isTerminated || secondsLeft <= 0 || submitting) return;
+    setTextAnswers((a) => ({ ...a, [qid]: value }));
+  };
 
   const mm = String(Math.floor(Math.max(secondsLeft, 0) / 60)).padStart(2, "0");
   const ss = String(Math.max(secondsLeft, 0) % 60).padStart(2, "0");
-  const answered = Object.keys(answers).filter((k) =>
-    (answers[k] ?? []).length > 0 ? true : false,
-  ).length;
+  const isAnswered = (qq: any) =>
+    qq.type === "free_text"
+      ? Boolean((textAnswers[qq.id] ?? "").trim())
+      : (answers[qq.id] ?? []).length > 0;
+  const answered = questions.filter(isAnswered).length;
 
   const q = questions[current];
 
@@ -470,6 +595,22 @@ function AttemptView({
           </CardHeader>
           <CardContent>
             <p className="font-semibold text-on-surface mb-5">{q.prompt}</p>
+            {q.type === "free_text" ? (
+              <div>
+                <Label htmlFor={`answer-${q.id}`}>Your answer</Label>
+                <Textarea
+                  id={`answer-${q.id}`}
+                  data-quiz-answer=""
+                  value={textAnswers[q.id] ?? ""}
+                  onChange={(e) => typeAnswer(q.id, e.target.value)}
+                  placeholder="Type your answer"
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={isPaused || isTerminated || secondsLeft <= 0 || submitting}
+                  className="mt-1.5 min-h-28"
+                />
+              </div>
+            ) : (
             <div className="space-y-2">
               {q.options?.map?.((o: any) => {
                 const sel = (answers[q.id] ?? []).includes(o.id);
@@ -477,6 +618,7 @@ function AttemptView({
                   <button
                     key={o.id}
                     onClick={() => choose(q.id, o.id)}
+                    disabled={isPaused || isTerminated || secondsLeft <= 0 || submitting}
                     className={cn(
                       "w-full text-left rounded-2xl border p-3.5 flex items-center gap-3 transition-all",
                       sel
@@ -499,6 +641,7 @@ function AttemptView({
                 );
               })}
             </div>
+            )}
           </CardContent>
         </Card>
       ) : null}
@@ -530,7 +673,7 @@ function AttemptView({
               "size-9 rounded-xl text-xs font-black transition-colors border",
               current === i
                 ? "bg-primary text-primary-foreground border-primary"
-                : (answers[qq.id] ?? []).length > 0
+                : isAnswered(qq)
                   ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
                   : "bg-surface-container text-on-surface-variant border-outline-variant",
             )}
@@ -552,14 +695,15 @@ function AttemptView({
           ) : (
             <CheckCircle2 className="size-4 mr-1" />
           )}
-          Submit quiz
+          {submitting ? "Submitting..." : secondsLeft <= 0 ? "Submitting quiz..." : "Submit quiz"}
         </Button>
       </div>
 
       {!proctor.isFullscreen && (
         <FullscreenGuard onResume={proctor.requestFullscreen} />
       )}
-      {proctor.warning && (
+      {isPaused && <PausedOverlay />}
+      {proctor.warning && !isPaused && (
         <ProctorWarning
           violation={proctor.warning}
           count={proctor.violationCount}
@@ -652,15 +796,12 @@ function ReviewView({ quiz, attempt }: { quiz: QuizData; attempt: any }) {
                     Correct answer: {ans.correctText}
                   </p>
                 )}
-                {ans.selectedText && (
+                {(ans.selectedText || ans.text) ? (
                   <p className={ans.isCorrect ? "text-on-surface-variant" : "text-rose-500"}>
-                    Your answer: {ans.selectedText}
+                    Your answer: {ans.selectedText || ans.text}
                   </p>
-                )}
-                {!ans.correctText && !ans.selectedText && (
-                  <p className="text-on-surface-variant">
-                    {ans.isCorrect ? "Correct." : "Incorrect."}
-                  </p>
+                ) : (
+                  <p className="text-rose-500/80 italic">Not answered</p>
                 )}
               </div>
             </div>
@@ -684,6 +825,7 @@ function AdminQuizView({
   const [attempts, setAttempts] = useState<any[]>([]);
   const [stats, setStats] = useState<Awaited<ReturnType<typeof getQuizStats>> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectedAttempt, setSelectedAttempt] = useState<any | null>(null);
 
   useEffect(() => {
     listQuizAttempts(quizId).then(setAttempts).catch(() => {});
@@ -863,7 +1005,12 @@ function AdminQuizView({
                   {i + 1}. {q.prompt}
                 </p>
                 <Badge variant="secondary" className="rounded-full shrink-0">
-                  {q.points} pts · {q.type === "mcq" ? "MCQ" : "True/False"}
+                  {q.points} pts ·{" "}
+                  {q.type === "mcq"
+                    ? "MCQ"
+                    : q.type === "free_text"
+                      ? "Free text"
+                      : "True/False"}
                 </Badge>
                 {stats?.perQuestion && (
                   <Badge variant="outline" className="rounded-full shrink-0 text-emerald-500">
@@ -901,6 +1048,15 @@ function AdminQuizView({
                     {q.options?.find((o: any) => o.id === (q.correctAnswer ?? [])[0])?.text ?? "—"}
                   </span>
                 )}
+                {q.type === "free_text" &&
+                  ((q.correctAnswer as string[]) ?? []).map((a: string) => (
+                    <span
+                      key={a}
+                      className="px-2.5 py-1 rounded-full text-xs border border-emerald-500/40 bg-emerald-500/10 text-emerald-500"
+                    >
+                      {a}
+                    </span>
+                  ))}
               </div>
             </div>
           ))}
@@ -926,7 +1082,11 @@ function AdminQuizView({
                     ? Math.round((a.scoreEarned / a.scoreTotal) * 100)
                     : 0;
                 return (
-                  <div key={a.id} className="flex items-center justify-between py-3">
+                  <div
+                    key={a.id}
+                    onClick={() => setSelectedAttempt(a)}
+                    className="flex items-center justify-between py-3 px-2 rounded-xl cursor-pointer hover:bg-surface-container-highest/40 transition-colors"
+                  >
                     <div>
                       <p className="text-sm font-bold text-on-surface">{a.studentName}</p>
                       <p className="text-xs text-on-surface-variant">{a.studentEmail}</p>
@@ -954,6 +1114,67 @@ function AdminQuizView({
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(selectedAttempt)}
+        onOpenChange={(open) => !open && setSelectedAttempt(null)}
+      >
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              {selectedAttempt?.studentName}&apos;s Submission
+            </DialogTitle>
+            <p className="text-xs text-on-surface-variant">
+              {selectedAttempt?.studentEmail} · Score: {selectedAttempt?.scoreEarned}/{selectedAttempt?.scoreTotal} (
+              {selectedAttempt?.scoreTotal > 0
+                ? Math.round((selectedAttempt.scoreEarned / selectedAttempt.scoreTotal) * 100)
+                : 0}
+              %)
+            </p>
+          </DialogHeader>
+          <div className="space-y-3 mt-4">
+            {Array.isArray(selectedAttempt?.answers) && selectedAttempt.answers.length > 0 ? (
+              selectedAttempt.answers.map((ans: any, i: number) => (
+                <div
+                  key={ans.questionId ?? i}
+                  className="rounded-2xl border border-outline-variant/50 p-3.5 text-xs space-y-1.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-semibold text-on-surface text-sm">
+                      {i + 1}. {ans.questionText ?? "Question"}
+                    </p>
+                    {ans.isCorrect ? (
+                      <Badge variant="secondary" className="rounded-full text-emerald-500 shrink-0">
+                        <CheckCircle2 className="size-3 mr-1" /> +{ans.points ?? 0}
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className="rounded-full text-rose-500 shrink-0">
+                        <XCircle className="size-3 mr-1" /> 0
+                      </Badge>
+                    )}
+                  </div>
+                  {ans.correctText && (
+                    <p className="text-emerald-500">
+                      Correct answer: {ans.correctText}
+                    </p>
+                  )}
+                  {ans.selectedText || ans.text ? (
+                    <p className={ans.isCorrect ? "text-on-surface-variant font-medium" : "text-rose-500 font-medium"}>
+                      Student answer: {ans.selectedText || ans.text}
+                    </p>
+                  ) : (
+                    <p className="text-rose-500/80 italic">Not answered</p>
+                  )}
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-on-surface-variant text-center py-6">
+                No answer details recorded yet for this attempt.
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

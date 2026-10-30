@@ -1272,12 +1272,12 @@ export const quizQuestions = pgTable(
     quizId: uuid("quiz_id")
       .notNull()
       .references(() => quizzes.id, { onDelete: "cascade" }),
-    type: text("type", { enum: ["mcq", "true_false"] })
+    type: text("type", { enum: ["mcq", "true_false", "free_text"] })
       .default("mcq")
       .notNull(),
     prompt: text("prompt").notNull(),
     options: jsonb("options"), // [{ id: string, text: string }]
-    correctAnswer: jsonb("correct_answer"), // mcq: string[] of option ids, true_false: [true] | [false]
+    correctAnswer: jsonb("correct_answer"), // mcq: option ids, true_false: ["true"|"false"], free_text: accepted strings
     points: real("points").notNull().default(1),
     orderIndex: integer("order_index").notNull().default(0),
     createdAt: timestamp("created_at").defaultNow().notNull(),

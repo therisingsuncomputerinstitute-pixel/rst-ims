@@ -34,7 +34,11 @@ export default function NewQuizPage() {
     if (valid.length === 0)
       return toast.error("Add at least one question with a prompt.");
     const missing = questions.find(
-      (q) => q.prompt.trim() && q.correctAnswer.length === 0,
+      (q) =>
+        q.prompt.trim() &&
+        (Array.isArray(q.correctAnswer) ? q.correctAnswer : [])
+          .map((a) => String(a).trim())
+          .filter(Boolean).length === 0,
     );
     if (missing) return toast.error("Every question needs a correct answer.");
 
@@ -65,7 +69,7 @@ export default function NewQuizPage() {
       <PageHeader
         backHref={`/courses/${params.courseId}`}
         title="New Quiz"
-        subtitle="Create a quiz with multiple choice or true/false questions."
+        subtitle="Create a quiz with multiple choice, true/false, or free-text questions."
         icon={<ClipboardList className="size-7 text-primary" />}
       />
       <QuizEditor

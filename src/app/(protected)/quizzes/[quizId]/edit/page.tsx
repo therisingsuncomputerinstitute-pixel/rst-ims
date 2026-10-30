@@ -70,7 +70,11 @@ export default function EditQuizPage() {
     if (valid.length === 0)
       return toast.error("Add at least one question with a prompt.");
     const missing = questions?.find(
-      (q) => q.prompt.trim() && q.correctAnswer.length === 0,
+      (q) =>
+        q.prompt.trim() &&
+        (Array.isArray(q.correctAnswer) ? q.correctAnswer : [])
+          .map((a) => String(a).trim())
+          .filter(Boolean).length === 0,
     );
     if (missing) return toast.error("Every question needs a correct answer.");
 

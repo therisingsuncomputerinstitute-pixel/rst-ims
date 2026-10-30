@@ -23,7 +23,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { QuizQuestionInput } from "@/server/ums";
+import { QuizQuestionInput, QuizQuestionType } from "@/server/ums";
 
 export type QuizFormState = {
   title: string;
@@ -36,7 +36,7 @@ export type QuizFormState = {
 
 export type QuestionDraft = {
   key: string;
-  type: "mcq" | "true_false";
+  type: QuizQuestionType;
   prompt: string;
   options: { id: string; text: string }[];
   correctAnswer: string[];
@@ -53,7 +53,12 @@ export function normalizeQuestions(
     type: q.type,
     prompt: q.prompt,
     options: q.type === "mcq" ? q.options : undefined,
-    correctAnswer: q.correctAnswer,
+    correctAnswer:
+      q.type === "free_text"
+        ? (Array.isArray(q.correctAnswer) ? q.correctAnswer : [])
+            .map((a) => String(a).trim())
+            .filter(Boolean)
+        : q.correctAnswer,
     points: q.points,
   }));
 }
@@ -127,7 +132,10 @@ export function QuizEditor({
     }
 
     const blanks = questions.filter(
-      (q) => !q.prompt.trim() && q.options.every((o) => !o.text.trim()),
+      (q) =>
+        !q.prompt.trim() &&
+        q.options.every((o) => !o.text.trim()) &&
+        q.correctAnswer.every((a) => !a.trim()),
     );
     setQuestions(imported);
     toast.success(
@@ -289,20 +297,29 @@ export function QuizEditor({
               Question {idx + 1}
               <Select
                 value={q.type}
-                onValueChange={(v) =>
+                onValueChange={(v) => {
+                  const type = v as QuizQuestionType;
                   updateQuestion(q.key, {
-                    type: v as "mcq" | "true_false",
-                    correctAnswer:
-                      v === "true_false" ? [] : q.correctAnswer,
+                    type,
+                    correctAnswer: [],
                     options:
-                      v === "true_false"
+                      type === "true_false"
                         ? [
                             { id: "true", text: "True" },
                             { id: "false", text: "False" },
                           ]
-                        : q.options,
-                  })
-                }
+                        : type === "free_text"
+                          ? []
+                          : q.options.length
+                            ? q.options
+                            : [
+                                { id: uid(), text: "" },
+                                { id: uid(), text: "" },
+                                { id: uid(), text: "" },
+                                { id: uid(), text: "" },
+                              ],
+                  });
+                }}
               >
                 <SelectTrigger className="w-44 h-8 ml-3 inline-flex !w-auto text-xs">
                   <SelectValue />
@@ -310,6 +327,7 @@ export function QuizEditor({
                 <SelectContent>
                   <SelectItem value="mcq">Multiple choice</SelectItem>
                   <SelectItem value="true_false">True / False</SelectItem>
+                  <SelectItem value="free_text">Free text</SelectItem>
                 </SelectContent>
               </Select>
             </CardTitle>
@@ -352,6 +370,27 @@ export function QuizEditor({
                 className="mt-1.5 min-h-20"
               />
             </div>
+            {q.type === "free_text" ? (
+              <div>
+                <Label htmlFor={`accepted-${q.key}`}>Accepted answers</Label>
+                <Textarea
+                  id={`accepted-${q.key}`}
+                  value={(Array.isArray(q.correctAnswer) ? q.correctAnswer : []).join("\n")}
+                  onChange={(e) =>
+                    updateQuestion(q.key, {
+                      correctAnswer: e.target.value.split("\n"),
+                    })
+                  }
+                  placeholder={"photosynthesis\nPhotosynthesis"}
+                  className="mt-1.5 min-h-24"
+                />
+                <p className="text-xs text-on-surface-variant mt-1.5">
+                  Students type their answer with no choices shown. Put one
+                  accepted answer per line. Matching ignores case and extra
+                  spaces.
+                </p>
+              </div>
+            ) : (
             <div>
               <Label className="mb-2 block">
                 {q.type === "true_false" ? "Correct answer" : "Options (select the correct one/ones)"}
@@ -420,6 +459,7 @@ export function QuizEditor({
                 </Button>
               )}
             </div>
+            )}
           </CardContent>
         </Card>
       ))}
