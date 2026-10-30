@@ -1234,6 +1234,7 @@ export const courseEnrollments = pgTable(
   (table) => [
     uniqueIndex("course_enrollment_uidx").on(table.courseId, table.studentId),
     index("course_enrollment_student_idx").on(table.studentId),
+    index("course_enrollment_course_idx").on(table.courseId),
   ],
 );
 
@@ -1263,7 +1264,11 @@ export const quizzes = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
   },
-  (table) => [index("quizzes_course_idx").on(table.courseId)],
+  (table) => [
+    index("quizzes_course_idx").on(table.courseId),
+    index("quizzes_org_idx").on(table.organizationId),
+    index("quizzes_course_pub_idx").on(table.courseId, table.isPublished),
+  ],
 );
 
 export const quizQuestions = pgTable(
@@ -1325,6 +1330,8 @@ export const quizAttempts = pgTable(
   (table) => [
     uniqueIndex("quiz_attempt_uidx").on(table.quizId, table.studentId),
     index("quiz_attempt_student_idx").on(table.studentId),
+    index("quiz_attempts_status_idx").on(table.status),
+    index("quiz_attempts_student_status_idx").on(table.studentId, table.status),
   ],
 );
 
@@ -1354,7 +1361,11 @@ export const assignments = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
   },
-  (table) => [index("assignments_course_idx").on(table.courseId)],
+  (table) => [
+    index("assignments_course_idx").on(table.courseId),
+    index("assignments_org_idx").on(table.organizationId),
+    index("assignments_course_pub_idx").on(table.courseId, table.isPublished),
+  ],
 );
 
 export const courseResources = pgTable(
@@ -1496,6 +1507,8 @@ export const submissions = pgTable(
   (table) => [
     uniqueIndex("submission_uidx").on(table.assignmentId, table.studentId),
     index("submission_student_idx").on(table.studentId),
+    index("submissions_status_idx").on(table.status),
+    index("submissions_student_status_idx").on(table.studentId, table.status),
   ],
 );
 

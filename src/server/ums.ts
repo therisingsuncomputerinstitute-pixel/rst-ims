@@ -394,6 +394,31 @@ export async function getCourse(courseId: string) {
     ? await listEnrolledStudents(courseId)
     : [];
 
+  const [studentSubs, studentAttempts] = !isAdmin
+    ? await Promise.all([
+        db
+          .select({
+            assignmentId: submissions.assignmentId,
+            status: submissions.status,
+            grade: submissions.grade,
+          })
+          .from(submissions)
+          .where(eq(submissions.studentId, u.id)),
+        db
+          .select({
+            quizId: quizAttempts.quizId,
+            status: quizAttempts.status,
+            scoreEarned: quizAttempts.scoreEarned,
+            scoreTotal: quizAttempts.scoreTotal,
+          })
+          .from(quizAttempts)
+          .where(eq(quizAttempts.studentId, u.id)),
+      ])
+    : [[], []];
+
+  const subMap = new Map(studentSubs.map((s) => [s.assignmentId, s]));
+  const attemptMap = new Map(studentAttempts.map((a) => [a.quizId, a]));
+
   return {
     course: {
       id: course.id,
@@ -418,6 +443,7 @@ export async function getCourse(courseId: string) {
         dueAt: q.dueAt,
         assignedStudentIds: q.assignedStudentIds ?? null,
         createdAt: q.createdAt,
+        myAttempt: attemptMap.get(q.id) ?? null,
       })),
     assignments: (course.assignments as any[])
       .filter((a) => isAdmin || (a.isPublished && isAssignedToStudent(a.assignedStudentIds, u.id)))
@@ -430,6 +456,7 @@ export async function getCourse(courseId: string) {
         dueAt: a.dueAt,
         assignedStudentIds: a.assignedStudentIds ?? null,
         createdAt: a.createdAt,
+        mySubmission: subMap.get(a.id) ?? null,
       })),
     resources: (course.resources as any[])
       .filter((r) => isAdmin || r.isPublished)
@@ -3011,11 +3038,48 @@ export async function getStudentDashboardData(): Promise<DashboardData> {
   const courseNameOf = new Map(
     myCourses.map((c) => [c.id, c.name] as const),
   );
-  const upcomingQuizzesWithCourse = upcomingQuizzes.map((q) => ({
+
+  // Exclude assignments and quizzes already submitted or completed by the student
+  const [completedSubmissions, completedQuizAttempts] = await Promise.all([
+    db
+      .select({ assignmentId: submissions.assignmentId })
+      .from(submissions)
+      .where(
+        and(
+          eq(submissions.studentId, u.id),
+          inArray(submissions.status, ["submitted", "graded"]),
+        ),
+      ),
+    db
+      .select({ quizId: quizAttempts.quizId })
+      .from(quizAttempts)
+      .where(
+        and(
+          eq(quizAttempts.studentId, u.id),
+          eq(quizAttempts.status, "submitted"),
+        ),
+      ),
+  ]);
+
+  const submittedAssignmentIds = new Set(
+    completedSubmissions.map((s) => s.assignmentId),
+  );
+  const submittedQuizIds = new Set(
+    completedQuizAttempts.map((q) => q.quizId),
+  );
+
+  const pendingQuizzes = upcomingQuizzes.filter(
+    (q) => !submittedQuizIds.has(q.id),
+  );
+  const pendingAssignments = upcomingAssignments.filter(
+    (a) => !submittedAssignmentIds.has(a.id),
+  );
+
+  const upcomingQuizzesWithCourse = pendingQuizzes.map((q) => ({
     ...q,
     courseName: courseNameOf.get(q.courseId) ?? "",
   }));
-  const upcomingAssignmentsWithCourse = upcomingAssignments.map((a) => ({
+  const upcomingAssignmentsWithCourse = pendingAssignments.map((a) => ({
     ...a,
     courseName: courseNameOf.get(a.courseId) ?? "",
   }));

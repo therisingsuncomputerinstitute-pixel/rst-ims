@@ -249,7 +249,15 @@ function StudentAssignmentView({
             <span className="flex items-center gap-2 text-sm font-bold text-on-surface-variant">
               <Rocket className="size-4 text-primary" /> {assignment.maxScore} points
             </span>
-            {dueDate ? (
+            {mySubmission?.status === "graded" ? (
+              <span className="flex items-center gap-2 text-sm font-bold text-emerald-500">
+                <CheckCircle2 className="size-4" /> Graded: {mySubmission.grade}/{assignment.maxScore} pts
+              </span>
+            ) : mySubmission?.status === "submitted" ? (
+              <span className="flex items-center gap-2 text-sm font-bold text-amber-500">
+                <Upload className="size-4" /> Submitted · Awaiting grade
+              </span>
+            ) : dueDate ? (
               <span
                 className={cn(
                   "flex items-center gap-2 text-sm font-bold",
@@ -261,16 +269,16 @@ function StudentAssignmentView({
             ) : null}
           </div>
           {assignment.description && (
-            <p className="text-sm text-on-surface-variant mt-4">
+            <p className="text-sm text-on-surface-variant mt-4 break-words [overflow-wrap:anywhere]">
               {assignment.description}
             </p>
           )}
           {assignment.instructions && (
-            <div className="mt-5 rounded-2xl bg-surface-container-highest/60 p-4 text-sm text-on-surface-variant">
+            <div className="mt-5 rounded-2xl bg-surface-container-highest/60 p-4 text-sm text-on-surface-variant break-words [overflow-wrap:anywhere]">
               <p className="text-[10px] font-black uppercase tracking-widest text-on-surface mb-1">
                 Instructions
               </p>
-              {assignment.instructions}
+              <div className="whitespace-pre-wrap">{assignment.instructions}</div>
             </div>
           )}
           <AssignmentFiles attachments={assignment.attachments ?? []} />
@@ -288,7 +296,11 @@ function StudentAssignmentView({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Upload className="size-5 text-primary" />
-            {mySubmission ? "Resubmit or update your work" : "Submit your work"}
+            {mySubmission?.status === "graded"
+              ? "Update submission (graded)"
+              : mySubmission
+                ? "Resubmit or update your work"
+                : "Submit your work"}
           </CardTitle>
         </CardHeader>
         <CardContent>

@@ -112,14 +112,14 @@ export default function AssignmentsPage() {
                   </div>
                 </Link>
                 <div className="flex items-center gap-3 shrink-0">
-                  {a.status !== "not_submitted" && (
-                    <div className="hidden sm:flex items-center gap-2">
+                  {a.status !== "not_submitted" ? (
+                    <div className="flex items-center gap-2">
                       {a.status === "graded" && (
                         <div className="text-right">
                           <p className="text-sm font-black text-on-surface">
                             {a.grade} <span className="text-xs text-on-surface-variant">/{a.maxScore}</span>
                           </p>
-                          <p className="text-[10px] uppercase tracking-widest text-on-surface-variant">
+                          <p className="text-[10px] uppercase tracking-widest text-on-surface-variant hidden sm:block">
                             Score
                           </p>
                         </div>
@@ -139,17 +139,18 @@ export default function AssignmentsPage() {
                         )}
                       </Badge>
                     </div>
+                  ) : (
+                    <div
+                      className={cn(
+                        "text-[10px] font-black uppercase tracking-widest",
+                        statusMeta[a.status].cls,
+                      )}
+                    >
+                      {statusMeta[a.status].label}
+                    </div>
                   )}
-                  <div
-                    className={cn(
-                      "text-[10px] font-black uppercase tracking-widest hidden md:block",
-                      statusMeta[a.status].cls,
-                    )}
-                  >
-                    {statusMeta[a.status].label}
-                  </div>
-                  {a.dueAt && (
-                    <div className="text-right hidden lg:block">
+                  {a.dueAt && a.status === "not_submitted" && (
+                    <div className="text-right hidden sm:block">
                       <Timer className="size-3.5 inline text-on-surface-variant mr-1" />
                       <span className="text-[11px] font-bold text-on-surface-variant">
                         {format(new Date(a.dueAt), "MMM d")}

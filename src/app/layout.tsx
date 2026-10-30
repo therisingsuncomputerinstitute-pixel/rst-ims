@@ -16,22 +16,61 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_APP_URL || "https://rst-ims.vercel.app",
+  ),
   title: {
     template: `%s - ${INSTITUTE_NAME}`,
-    default: INSTITUTE_NAME,
+    default: `${INSTITUTE_NAME} | Institute Management System`,
   },
-  description: `${INSTITUTE_NAME} Institute Management System — courses, quizzes, assignments, and grades for students and faculty.`,
+  description: `${INSTITUTE_NAME} Institute Management System — comprehensive portal for courses, proctored quizzes, assignments, attendance, and weighted grades for students and faculty.`,
+  keywords: [
+    "Institute Management System",
+    "LMS",
+    "Course Management",
+    "Online Exams",
+    "Quizzes",
+    "Assignments",
+    "Grades",
+    "Student Portal",
+    INSTITUTE_NAME,
+  ],
+  authors: [{ name: INSTITUTE_NAME }],
+  creator: INSTITUTE_NAME,
+  publisher: INSTITUTE_NAME,
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
   openGraph: {
-    title: INSTITUTE_NAME,
-    description: `Institute Management System for ${INSTITUTE_NAME}.`,
+    title: `${INSTITUTE_NAME} | Institute Management System`,
+    description: `Comprehensive portal for courses, proctored quizzes, assignments, and grades for ${INSTITUTE_NAME}.`,
     locale: "en_US",
     type: "website",
+    siteName: INSTITUTE_NAME,
   },
   twitter: {
     card: "summary_large_image",
-    title: INSTITUTE_NAME,
-    description: `Institute Management System for ${INSTITUTE_NAME}.`,
+    title: `${INSTITUTE_NAME} | Institute Management System`,
+    description: `Comprehensive portal for courses, proctored quizzes, assignments, and grades for ${INSTITUTE_NAME}.`,
   },
+};
+
+export const viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#09090b" },
+  ],
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
 };
 
 export default function RootLayout({

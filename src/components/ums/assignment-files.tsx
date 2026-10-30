@@ -129,20 +129,20 @@ export function PendingFilesEditor({
           {links.map((d) => (
             <div
               key={d.key}
-              className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-4"
+              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-4 overflow-hidden"
             >
-              <div className="flex items-center gap-3 min-w-0">
+              <div className="flex items-center gap-3 min-w-0 flex-1 overflow-hidden">
                 <LinkIcon className="size-5 text-primary shrink-0" />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1 overflow-hidden">
                   <p className="text-sm font-bold text-on-surface truncate">
                     {d.title}
                   </p>
-                  <p className="text-xs text-on-surface-variant truncate">
-                    {ATTACHMENT_KIND_LABELS[d.kind]} · {d.url}
+                  <p className="text-xs text-on-surface-variant truncate block max-w-full">
+                    {ATTACHMENT_KIND_LABELS[d.kind]} · {d.url.replace(/^https?:\/\//, "").slice(0, 50)}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                 <Select
                   value={d.kind}
                   onValueChange={(v) => {
@@ -329,25 +329,25 @@ export function AttachmentRow({
 }) {
   const isLink = attachment.kind === "link" || !!attachment.url;
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-3.5">
-      <div className="flex items-center gap-3 min-w-0">
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-outline-variant/50 p-3.5 overflow-hidden">
+      <div className="flex items-center gap-3 min-w-0 flex-1 overflow-hidden">
         {isLink ? (
           <LinkIcon className="size-5 text-primary shrink-0" />
         ) : (
           <FileText className="size-5 text-primary shrink-0" />
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1 overflow-hidden">
           <p className="text-sm font-bold text-on-surface truncate">
             {attachment.fileName}
           </p>
-          <p className="text-xs text-on-surface-variant">
+          <p className="text-xs text-on-surface-variant truncate block max-w-full">
             {ATTACHMENT_KIND_LABELS[attachment.kind as AssignmentAttachmentKind] ?? "Reference"}
             {!isLink && attachment.fileSize ? ` · ${fileSizeLabel(attachment.fileSize)}` : ""}
-            {isLink && attachment.url ? ` · ${attachment.url.replace(/^https?:\/\//, "").slice(0, 40)}` : ""}
+            {isLink && attachment.url ? ` · ${attachment.url.replace(/^https?:\/\//, "").slice(0, 50)}` : ""}
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
         <Button
           type="button"
           variant="outline"

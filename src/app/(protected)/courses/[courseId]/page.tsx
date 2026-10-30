@@ -325,6 +325,7 @@ function OverviewTab({
                 published={q.isPublished}
                 isAdmin={isAdmin}
                 assignedStudentIds={q.assignedStudentIds}
+                myAttempt={(q as any).myAttempt}
                 type="quiz"
                 itemId={q.id}
                 busy={busy}
@@ -365,6 +366,7 @@ function OverviewTab({
                 published={a.isPublished}
                 isAdmin={isAdmin}
                 assignedStudentIds={a.assignedStudentIds}
+                mySubmission={(a as any).mySubmission}
                 type="assignment"
                 itemId={a.id}
                 busy={busy}
@@ -403,6 +405,8 @@ function ItemCard({
   type,
   itemId,
   assignedStudentIds,
+  mySubmission,
+  myAttempt,
   busy,
   setBusy,
   load,
@@ -417,6 +421,8 @@ function ItemCard({
   type: "quiz" | "assignment";
   itemId: string;
   assignedStudentIds?: string[] | null;
+  mySubmission?: { status: string; grade: number | null } | null;
+  myAttempt?: { status: string; scoreEarned: number | null; scoreTotal: number | null } | null;
   busy: string | null;
   setBusy: (v: string | null) => void;
   load: () => void;
@@ -458,43 +464,105 @@ function ItemCard({
           <p className="font-bold text-on-surface truncate">{title}</p>
           <p className="text-xs text-on-surface-variant truncate">
             {subtitle}
-            <span className="inline-flex items-center gap-1 ml-2">
-              <CalendarDays className="size-3" /> {dueAt}
-            </span>
+            {type === "assignment" && mySubmission?.status === "graded" ? (
+              <span className="inline-flex items-center gap-1 ml-2 text-emerald-500 font-semibold">
+                <CheckCircle2 className="size-3" /> Graded{mySubmission.grade != null ? ` (${mySubmission.grade} pts)` : ""}
+              </span>
+            ) : type === "assignment" && mySubmission?.status === "submitted" ? (
+              <span className="inline-flex items-center gap-1 ml-2 text-amber-500 font-semibold">
+                <Upload className="size-3" /> Submitted
+              </span>
+            ) : type === "quiz" && myAttempt?.status === "submitted" ? (
+              <span className="inline-flex items-center gap-1 ml-2 text-emerald-500 font-semibold">
+                <CheckCircle2 className="size-3" /> Attempted{myAttempt.scoreEarned != null ? ` (${myAttempt.scoreEarned} pts)` : ""}
+              </span>
+            ) : type === "quiz" && myAttempt?.status === "in_progress" ? (
+              <span className="inline-flex items-center gap-1 ml-2 text-amber-500 font-semibold">
+                <Timer className="size-3" /> In progress
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 ml-2">
+                <CalendarDays className="size-3" /> {dueAt}
+              </span>
+            )}
           </p>
         </div>
       </Link>
       <div className="flex items-center gap-2 shrink-0">
-        {isAdmin && (
-          <Badge
-            variant="outline"
-            className={cn(
-              "rounded-full text-xs font-normal",
-              assignedStudentIds && assignedStudentIds.length > 0
-                ? "border-primary/40 text-primary bg-primary/5"
-                : "border-outline-variant/60 text-on-surface-variant",
+        {isAdmin ? (
+          <>
+            {assignedStudentIds && assignedStudentIds.length > 0 ? (
+              <Badge
+                variant="outline"
+                className="rounded-full text-xs font-normal border-primary/40 text-primary bg-primary/5"
+              >
+                <Users className="size-3 mr-1" />
+                {assignedStudentIds.length} assigned
+              </Badge>
+            ) : (
+              <Badge
+                variant="outline"
+                className="rounded-full text-xs font-normal border-outline-variant/60 text-on-surface-variant"
+              >
+                <Users className="size-3 mr-1" /> All students
+              </Badge>
             )}
-          >
-            <Users className="size-3 mr-1" />
-            {assignedStudentIds && assignedStudentIds.length > 0
-              ? `${assignedStudentIds.length} assigned`
-              : "All students"}
-          </Badge>
-        )}
-        <Badge
-          variant="secondary"
-          className={cn(
-            "rounded-full",
-            published ? "text-emerald-500" : "text-on-surface-variant",
-          )}
-        >
-          {published ? (
-            <CheckCircle2 className="size-3 mr-1" />
+            <Badge
+              variant="secondary"
+              className={cn(
+                "rounded-full",
+                published ? "text-emerald-500" : "text-on-surface-variant",
+              )}
+            >
+              {published ? (
+                <CheckCircle2 className="size-3 mr-1" />
+              ) : (
+                <Circle className="size-3 mr-1" />
+              )}
+              {published ? "Published" : "Draft"}
+            </Badge>
+          </>
+        ) : type === "assignment" ? (
+          mySubmission?.status === "graded" ? (
+            <Badge
+              variant="secondary"
+              className="rounded-full text-emerald-500 bg-emerald-500/10 border border-emerald-500/30"
+            >
+              <CheckCircle2 className="size-3 mr-1" /> Graded
+            </Badge>
+          ) : mySubmission?.status === "submitted" ? (
+            <Badge
+              variant="secondary"
+              className="rounded-full text-amber-500 bg-amber-500/10 border border-amber-500/30"
+            >
+              <Upload className="size-3 mr-1" /> Awaiting grade
+            </Badge>
           ) : (
-            <Circle className="size-3 mr-1" />
-          )}
-          {published ? "Published" : "Draft"}
-        </Badge>
+            <Badge variant="outline" className="rounded-full text-on-surface-variant">
+              Due
+            </Badge>
+          )
+        ) : type === "quiz" ? (
+          myAttempt?.status === "submitted" ? (
+            <Badge
+              variant="secondary"
+              className="rounded-full text-emerald-500 bg-emerald-500/10 border border-emerald-500/30"
+            >
+              <CheckCircle2 className="size-3 mr-1" /> Completed
+            </Badge>
+          ) : myAttempt?.status === "in_progress" ? (
+            <Badge
+              variant="secondary"
+              className="rounded-full text-amber-500 bg-amber-500/10 border border-amber-500/30"
+            >
+              <Timer className="size-3 mr-1" /> In progress
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="rounded-full text-on-surface-variant">
+              Not attempted
+            </Badge>
+          )
+        ) : null}
         {isAdmin && (
           <>
             <Button
@@ -797,12 +865,12 @@ function ResourcesTab({
           resources.map((r) => (
             <div
               key={r.id}
-              className="rounded-2xl border border-outline-variant/60 bg-surface-container p-4 flex items-center justify-between gap-3 hover:border-primary/40 transition-colors"
+              className="rounded-2xl border border-outline-variant/60 bg-surface-container p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-primary/40 transition-colors overflow-hidden"
             >
               <button
                 onClick={() => openResource(r)}
                 disabled={busy === `open-${r.id}`}
-                className="flex items-center gap-3 min-w-0 text-left"
+                className="flex items-center gap-3 min-w-0 flex-1 text-left overflow-hidden max-w-full"
               >
                 <div className="p-2.5 rounded-xl bg-primary/10 shrink-0">
                   {r.kind === "link" ? (
@@ -813,18 +881,18 @@ function ResourcesTab({
                     <Download className="size-4 text-primary" />
                   )}
                 </div>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1 overflow-hidden">
                   <p className="font-bold text-on-surface truncate">{r.title}</p>
-                  <p className="text-xs text-on-surface-variant truncate">
+                  <p className="text-xs text-on-surface-variant truncate block max-w-full">
                     {r.kind === "link"
-                      ? r.url
-                      : `${r.fileName ?? "File"}${r.fileSize ? ` \u00b7 ${fileSizeLabel(r.fileSize)}` : ""}`}
+                      ? (r.url ?? "").replace(/^https?:\/\//, "")
+                      : `${r.fileName ?? "File"}${r.fileSize ? ` · ${fileSizeLabel(r.fileSize)}` : ""}`}
                   </p>
                 </div>
               </button>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap sm:flex-nowrap">
                 {r.description && (
-                  <span className="hidden md:inline text-xs text-on-surface-variant max-w-[16rem] truncate">
+                  <span className="hidden lg:inline text-xs text-on-surface-variant max-w-[14rem] truncate">
                     {r.description}
                   </span>
                 )}
