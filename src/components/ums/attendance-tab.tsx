@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -197,10 +198,10 @@ function SessionRow({
             )}
           </div>
           <p className="text-xs text-on-surface-variant mt-1">
-            {format(new Date(session.startsAt), "EEE d MMM, HH:mm")} ·{" "}
+            {fmtDate(session.startsAt, "EEE d MMM, HH:mm")} ·{" "}
             {session.durationMinutes} min ·{" "}
-            {format(new Date(session.startsAt), "HH:mm")}–
-            {format(new Date(session.closesAt), "HH:mm")}
+            {fmtDate(session.startsAt, "HH:mm")}–
+            {fmtDate(session.closesAt, "HH:mm")}
           </p>
           <div className="flex items-center gap-3 mt-2 flex-wrap">
             {STATUS_OPTIONS.map((o) => (
@@ -337,7 +338,7 @@ function RosterDialog({
         <DialogHeader>
           <DialogTitle>{sheet.session.title}</DialogTitle>
           <DialogDescription>
-            {format(new Date(sheet.session.startsAt), "EEEE d MMMM, HH:mm")} ·{" "}
+            {fmtDate(sheet.session.startsAt, "EEEE d MMMM, HH:mm")} ·{" "}
             {sheet.session.durationMinutes} min
           </DialogDescription>
         </DialogHeader>

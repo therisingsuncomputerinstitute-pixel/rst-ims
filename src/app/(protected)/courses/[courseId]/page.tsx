@@ -52,7 +52,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { parseStudentList } from "@/lib/student-list";
 import { fileSizeLabel } from "@/components/ums/assignment-files";
@@ -320,7 +320,7 @@ function OverviewTab({
                 icon={ClipboardList}
                 title={q.title}
                 subtitle={`${q.totalQuestions} questions · ${q.durationMinutes} min · ${q.maxScore} points`}
-                dueAt={q.dueAt ? format(new Date(q.dueAt), "MMM d, yyyy") : "No due date"}
+                dueAt={q.dueAt ? fmtDate(q.dueAt, "MMM d, yyyy") : "No due date"}
                 href={isAdmin ? `/quizzes/${q.id}` : `/quizzes/${q.id}`}
                 published={q.isPublished}
                 isAdmin={isAdmin}
@@ -361,7 +361,7 @@ function OverviewTab({
                 icon={FileText}
                 title={a.title}
                 subtitle={a.maxScore ? `${a.maxScore} points` : ""}
-                dueAt={a.dueAt ? format(new Date(a.dueAt), "MMM d, yyyy") : "No due date"}
+                dueAt={a.dueAt ? fmtDate(a.dueAt, "MMM d, yyyy") : "No due date"}
                 href={`/assignments/${a.id}`}
                 published={a.isPublished}
                 isAdmin={isAdmin}

@@ -26,7 +26,7 @@ import {
   NewLinkDraft,
   PendingFilesEditor,
 } from "@/components/ums/assignment-files";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { PageHeader } from "@/components/ums/page-header";
 import { StudentAssignSelector } from "@/components/ums/student-assign-selector";
 
@@ -51,7 +51,7 @@ export default function EditAssignmentPage() {
           description: a.description || "",
           instructions: a.instructions || "",
           maxScore: String(a.maxScore),
-          dueAt: a.dueAt ? format(new Date(a.dueAt), "yyyy-MM-dd'T'HH:mm") : "",
+          dueAt: a.dueAt ? fmtDate(a.dueAt, "yyyy-MM-dd'T'HH:mm", "") : "",
           assignedStudentIds: a.assignedStudentIds ?? null,
         });
         setAttachments((a.attachments ?? []) as AssignmentAttachment[]);

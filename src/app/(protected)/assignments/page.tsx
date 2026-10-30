@@ -16,7 +16,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { authClient } from "@/lib/auth-client";
 import { listMyAssignments, MyAssignmentItem } from "@/server/ums";
 import { PageHeader } from "@/components/ums/page-header";
@@ -153,7 +153,7 @@ export default function AssignmentsPage() {
                     <div className="text-right hidden sm:block">
                       <Timer className="size-3.5 inline text-on-surface-variant mr-1" />
                       <span className="text-[11px] font-bold text-on-surface-variant">
-                        {format(new Date(a.dueAt), "MMM d")}
+                        {fmtDate(a.dueAt, "MMM d")}
                       </span>
                     </div>
                   )}

@@ -752,6 +752,9 @@ export type QuizQuestionType =
   | "mcq";
 
 export type QuizQuestionInput = {
+  /** Existing question id — when present the row is updated in place so that
+   *  saved attempts keep pointing at the same question. */
+  id?: string;
   type: QuizQuestionType;
   prompt: string;
   options?: { id: string; text: string }[];
@@ -769,6 +772,29 @@ function normalizeFreeTextPermissive(value: string) {
     .replace(/[.?!,;:]+$/, "")
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+const promptKey = (value: unknown) =>
+  String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+/**
+ * Finds the stored answer for a question. Matches by question id first and
+ * falls back to the prompt text, so answers from an older client (or from
+ * before a question was edited) are still graded instead of silently lost.
+ */
+function findAnswerForQuestion(
+  answers: any[],
+  question: { id: string; prompt: string },
+) {
+  const byId = answers.find((a: any) => a?.questionId === question.id);
+  if (byId) return byId;
+  const key = promptKey(question.prompt);
+  return answers.find(
+    (a: any) => a?.questionText && promptKey(a.questionText) === key,
+  );
 }
 
 type GradedAnswer = {
@@ -871,35 +897,83 @@ function gradeQuestion(
   };
 }
 
+function questionValues(q: QuizQuestionInput) {
+  const accepted =
+    q.type === "free_text"
+      ? (q.correctAnswer ?? [])
+          .map((c) => String(c).trim())
+          .filter(Boolean)
+      : q.type === "true_false"
+        ? q.correctAnswer
+        : (q.correctAnswer ?? ([] as string[]));
+  return {
+    type: q.type,
+    prompt: q.prompt.trim(),
+    options:
+      q.type === "free_text"
+        ? null
+        : (q.options ?? []),
+    correctAnswer: accepted,
+    points: q.points ?? 1,
+  };
+}
+
 async function insertQuestions(
   quizId: string,
   questions: QuizQuestionInput[],
 ) {
   if (!questions.length) return;
   await db.insert(quizQuestions).values(
-    questions.map((q, i) => {
-      const accepted =
-        q.type === "free_text"
-          ? (q.correctAnswer ?? [])
-              .map((c) => String(c).trim())
-              .filter(Boolean)
-          : q.type === "true_false"
-            ? q.correctAnswer
-            : (q.correctAnswer ?? ([] as string[]));
-      return {
-        quizId,
-        type: q.type,
-        prompt: q.prompt.trim(),
-        options:
-          q.type === "free_text"
-            ? null
-            : (q.options ?? []),
-        correctAnswer: accepted,
-        points: q.points ?? 1,
-        orderIndex: i,
-      };
-    }),
+    questions.map((q, i) => ({
+      quizId,
+      ...questionValues(q),
+      orderIndex: i,
+    })),
   );
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Applies an edited question list to an existing quiz WITHOUT regenerating the
+ * ids of questions that already exist.
+ *
+ * The previous delete-all/re-insert implementation gave every question a new
+ * uuid on each save, which silently invalidated every saved attempt (the
+ * answers pointed at ids that no longer existed, so re-grading marked the whole
+ * quiz as 0).
+ */
+async function syncQuestions(quizId: string, questions: QuizQuestionInput[]) {
+  const existing = await db
+    .select({ id: quizQuestions.id })
+    .from(quizQuestions)
+    .where(eq(quizQuestions.quizId, quizId));
+  const existingIds = new Set(existing.map((row) => row.id));
+
+  const keep = new Set<string>();
+  for (const q of questions) {
+    if (q.id && UUID_RE.test(q.id) && existingIds.has(q.id)) keep.add(q.id);
+  }
+
+  const removed = existing
+    .map((row) => row.id)
+    .filter((id) => !keep.has(id));
+  if (removed.length > 0) {
+    await db.delete(quizQuestions).where(inArray(quizQuestions.id, removed));
+  }
+
+  for (const [i, q] of questions.entries()) {
+    const values = { ...questionValues(q), orderIndex: i };
+    if (q.id && keep.has(q.id)) {
+      await db
+        .update(quizQuestions)
+        .set(values)
+        .where(eq(quizQuestions.id, q.id));
+    } else {
+      await db.insert(quizQuestions).values({ quizId, ...values });
+    }
+  }
 }
 
 export async function createQuiz(input: {
@@ -1160,8 +1234,7 @@ export async function updateQuiz(
     .where(eq(quizzes.id, quizId));
 
   if (input.questions) {
-    await db.delete(quizQuestions).where(eq(quizQuestions.quizId, quizId));
-    await insertQuestions(quizId, input.questions);
+    await syncQuestions(quizId, input.questions);
     // Re-score all existing submitted attempts so existing scores reflect the new answers.
     await reScoreQuizAttempts(quizId);
   }
@@ -1229,17 +1302,17 @@ export async function startQuizAttempt(quizId: string, accessKey?: string) {
       and(e(a.quizId, quizId), e(a.studentId, u.id)),
   });
   if (existing?.status === "submitted") {
-    return { attempt: existing, fresh: false };
+    return { attempt: { ...existing, serverNow: Date.now() }, fresh: false };
   }
   if (existing) {
-    return { attempt: existing, fresh: false };
+    return { attempt: { ...existing, serverNow: Date.now() }, fresh: false };
   }
 
   const [attempt] = await db
     .insert(quizAttempts)
     .values({ quizId, studentId: u.id, answers: [] })
     .returning();
-  return { attempt, fresh: true };
+  return { attempt: { ...attempt, serverNow: Date.now() }, fresh: true };
 }
 
 export async function saveQuizProgress(
@@ -1267,7 +1340,13 @@ export async function saveQuizProgress(
 
 export async function submitQuizAttempt(
   attemptId: string,
-  answers: { questionId: string; selected: string[]; text?: string }[],
+  answers: {
+    questionId: string;
+    selected: string[];
+    text?: string;
+    /** Optional prompt, used to re-match answers if the question id changed. */
+    questionText?: string;
+  }[],
 ) {
   const u = await requireUser();
   const attempt = await db.query.quizAttempts.findFirst({
@@ -1284,21 +1363,28 @@ export async function submitQuizAttempt(
     orderBy: (q, { asc: a }) => [a(q.orderIndex)],
   });
 
-  const submittedAnswers =
-    Array.isArray(answers) && answers.length > 0
-      ? answers
-      : Array.isArray(attempt.answers)
-        ? (attempt.answers as any[])
-        : [];
+  const submittedAnswers = Array.isArray(answers) ? answers : [];
+  const storedAnswers = Array.isArray(attempt.answers)
+    ? (attempt.answers as any[])
+    : [];
+
+  const hasValue = (a: any) =>
+    Boolean((Array.isArray(a?.selected) && a.selected.length > 0) || (a?.text ?? "").trim());
 
   let earned = 0;
   let total = 0;
   const normalized = questions.map((q) => {
+    const fromClient = findAnswerForQuestion(submittedAnswers, q);
+    const fromStore = findAnswerForQuestion(storedAnswers, q);
+    // The client state is authoritative, but if it arrived empty (for example
+    // the timer fired before the page restored the student's answers) fall back
+    // to the last auto-saved progress instead of scoring the question as wrong.
     const rawAnswer =
-      submittedAnswers.find((a: any) => a?.questionId === q.id) ??
-      (Array.isArray(attempt.answers)
-        ? (attempt.answers as any[]).find((a: any) => a?.questionId === q.id)
-        : undefined);
+      hasValue(fromClient)
+        ? fromClient
+        : hasValue(fromStore)
+          ? fromStore
+          : (fromClient ?? fromStore);
     const graded = gradeQuestion(q, rawAnswer);
     total += q.points;
     if (graded.isCorrect) earned += q.points;
@@ -1331,16 +1417,23 @@ export async function submitQuizAttempt(
 
 export async function getMyAttempt(quizId: string) {
   const u = await requireUser();
-  return db.query.quizAttempts.findFirst({
+  const attempt = await db.query.quizAttempts.findFirst({
     where: (a, { eq: e }) =>
       and(e(a.quizId, quizId), e(a.studentId, u.id)),
   });
+  // `serverNow` lets the client compute the countdown against the server clock
+  // instead of the student's device clock, which is often wrong.
+  return attempt ? { ...attempt, serverNow: Date.now() } : attempt;
 }
 
 /**
  * Re-scores every submitted attempt for a quiz after its questions/answers
  * have changed. Existing answers are preserved; only the score and per-answer
  * isCorrect/correctText flags are recomputed. Call this from updateQuiz.
+ *
+ * Answers are matched by question id first and by prompt text second, so a
+ * question that was re-created (new id, same prompt) keeps the student's
+ * original answer instead of being marked wrong.
  */
 export async function reScoreQuizAttempts(quizId: string) {
   await requireAdmin();
@@ -1351,12 +1444,15 @@ export async function reScoreQuizAttempts(quizId: string) {
     where: (a, { eq: e }) => and(e(a.quizId, quizId), e(a.status, "submitted")),
   });
 
+  const currentIds = new Set(questions.map((q) => q.id));
+  const currentPrompts = new Set(questions.map((q) => promptKey(q.prompt)));
+
   for (const attempt of attempts) {
     const oldAnswers = (attempt.answers as any[]) ?? [];
     let earned = 0;
     let total = 0;
     const normalized = questions.map((q) => {
-      const existing = oldAnswers.find((a: any) => a.questionId === q.id);
+      const existing = findAnswerForQuestion(oldAnswers, q);
       const graded = gradeQuestion(q, existing);
       total += q.points;
       if (graded.isCorrect) earned += q.points;
@@ -1366,9 +1462,19 @@ export async function reScoreQuizAttempts(quizId: string) {
       };
     });
 
+    // Never delete historical answers for questions that were removed from the
+    // quiz — they are kept so the student's attempt history is not destroyed.
+    const leftovers = oldAnswers.filter(
+      (a: any) =>
+        a?.questionId &&
+        !currentIds.has(a.questionId) &&
+        !currentPrompts.has(promptKey(a.questionText)),
+    );
+    const merged = [...normalized, ...leftovers];
+
     await db
       .update(quizAttempts)
-      .set({ answers: normalized, scoreEarned: earned, scoreTotal: total })
+      .set({ answers: merged, scoreEarned: earned, scoreTotal: total })
       .where(eq(quizAttempts.id, attempt.id));
   }
   return { rescored: attempts.length };
@@ -1464,7 +1570,7 @@ export async function getMyAttemptStatus(attemptId: string) {
   if (attempt.studentId !== u.id && u.role !== "admin") {
     throw new Error("Unauthorized.");
   }
-  return attempt;
+  return { ...attempt, serverNow: Date.now() };
 }
 
 /**

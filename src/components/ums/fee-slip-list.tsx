@@ -1,7 +1,7 @@
 "use client";
 
 import { Eye, Receipt, Trash2 } from "lucide-react";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -80,7 +80,7 @@ export function FeeSlipList({
                   {s.rollNumber ? ` · Roll ${s.rollNumber}` : ""} ·{" "}
                   {s.method.replace(/_/g, " ")}
                   {s.reference ? ` · Ref ${s.reference}` : ""} · Paid{" "}
-                  {format(new Date(s.paidAt), "d MMM yyyy")}
+                  {fmtDate(s.paidAt, "d MMM yyyy")}
                 </p>
 
                 <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">

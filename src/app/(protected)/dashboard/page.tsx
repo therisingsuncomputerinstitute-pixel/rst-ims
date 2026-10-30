@@ -28,7 +28,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { formatDistanceToNow, format } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
+import { fmtDate, toSafeDate } from "@/lib/date";
 import { authClient } from "@/lib/auth-client";
 import { getStudentDashboardData } from "@/server/ums";
 
@@ -283,7 +284,7 @@ function ActivityFeed({
             </div>
             <span className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant/70 shrink-0">
               {item.createdAt
-                ? formatDistanceToNow(new Date(item.createdAt), { addSuffix: true })
+                ? formatDistanceToNow(toSafeDate(item.createdAt) ?? new Date(), { addSuffix: true })
                 : ""}
             </span>
           </div>
@@ -331,11 +332,11 @@ function DueSoonAlert({ items }: { items: NonNullable<DashboardData["dueSoon"]> 
             </div>
             <div className="text-right shrink-0">
               <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">
-                Due {item.createdAt ? format(new Date(item.createdAt), "MMM d, h:mm a") : ""}
+                Due {item.createdAt ? fmtDate(item.createdAt, "MMM d, h:mm a") : ""}
               </p>
               <p className="text-[10px] text-on-surface-variant">
                 {item.createdAt
-                  ? formatDistanceToNow(new Date(item.createdAt))
+                  ? formatDistanceToNow(toSafeDate(item.createdAt) ?? new Date())
                   : ""}
               </p>
             </div>
@@ -470,7 +471,7 @@ function AdminDashboard({ data }: { data: DashboardData }) {
                       {s.assignmentTitle} · {s.fileName}
                     </p>
                     <p className="text-[10px] text-on-surface-variant mt-0.5">
-                      {formatDistanceToNow(new Date(s.createdAt), {
+                      {formatDistanceToNow(toSafeDate(s.createdAt) ?? new Date(), {
                         addSuffix: true,
                       })}
                     </p>
@@ -800,10 +801,10 @@ function UpcomingList({
                   {item.dueAt && (
                     <div className="text-right">
                       <p className="text-xs font-black text-amber-500 uppercase tracking-wide">
-                        Due {format(item.dueAt, "MMM d")}
+                        Due {fmtDate(item.dueAt, "MMM d")}
                       </p>
                       <p className="text-[10px] text-on-surface-variant">
-                        {formatDistanceToNow(new Date(item.dueAt), {
+                        {formatDistanceToNow(toSafeDate(item.dueAt) ?? new Date(), {
                           addSuffix: true,
                         })}
                       </p>

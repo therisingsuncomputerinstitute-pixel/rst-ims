@@ -48,10 +48,15 @@ export type QuestionDraft = {
 let counter = 0;
 const uid = () => `opt_${Date.now()}_${counter++}`;
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function normalizeQuestions(
   questions: QuestionDraft[],
 ): QuizQuestionInput[] {
   return questions.map((q) => ({
+    // Existing questions keep their database id so saved attempts stay valid.
+    id: UUID_RE.test(q.key) ? q.key : undefined,
     type: q.type,
     prompt: q.prompt,
     options: q.type === "free_text" ? undefined : q.options,

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { CalendarCheck, Clock, Info } from "lucide-react";
 import { toast } from "sonner";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -126,7 +126,7 @@ export default function AttendancePage() {
                     </p>
                     <p className="text-xs text-on-surface-variant">
                       {r.courseCode} ·{" "}
-                      {format(new Date(r.startsAt), "EEE d MMM, HH:mm")} ·{" "}
+                      {fmtDate(r.startsAt, "EEE d MMM, HH:mm")} ·{" "}
                       {r.durationMinutes} min
                     </p>
                   </div>

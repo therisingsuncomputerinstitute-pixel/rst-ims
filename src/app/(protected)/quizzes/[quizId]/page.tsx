@@ -45,7 +45,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { format } from "date-fns";
+import { fmtDate } from "@/lib/date";
 import { authClient } from "@/lib/auth-client";
 import {
   getQuiz,
@@ -226,7 +226,7 @@ function IntroView({
               <Stat
                 icon={CalendarDays}
                 label="Due"
-                value={format(new Date((quiz as any).dueAt), "MMM d, h:mm a")}
+                value={fmtDate((quiz as any).dueAt, "MMM d, h:mm a")}
               />
             )}
           </div>
@@ -330,6 +330,8 @@ function AttemptView({
     warningLimit?: number;
     startedAt?: Date | string;
     answers?: any[];
+    /** Server timestamp (ms) captured when the attempt was loaded. */
+    serverNow?: number;
   };
   onDone: (a: any) => void;
 }) {
@@ -382,10 +384,19 @@ function AttemptView({
 
   const durationSeconds = Math.max(1, ((quiz as any).durationMinutes ?? 15) * 60);
 
+  // Count the remaining time against the server clock, not the student's
+  // device clock. A device that is even slightly ahead would otherwise make
+  // the quiz look already expired and auto-submit an empty (0 score) attempt.
+  const clockOffsetRef = useRef(
+    typeof attempt.serverNow === "number" ? attempt.serverNow - Date.now() : 0,
+  );
+  const serverNow = () => Date.now() + clockOffsetRef.current;
+
   const calculateSecondsLeft = useCallback(() => {
     if (attempt?.startedAt) {
       const startMs = new Date(attempt.startedAt).getTime();
-      const elapsedSeconds = Math.floor((Date.now() - startMs) / 1000);
+      if (Number.isNaN(startMs)) return durationSeconds;
+      const elapsedSeconds = Math.floor((serverNow() - startMs) / 1000);
       return Math.max(0, durationSeconds - Math.max(0, elapsedSeconds));
     }
     return durationSeconds;
@@ -455,6 +466,9 @@ function AttemptView({
     const poll = setInterval(async () => {
       try {
         const status = await getMyAttemptStatus(attempt.id);
+        if (typeof status.serverNow === "number") {
+          clockOffsetRef.current = status.serverNow - Date.now();
+        }
         if (status.status === "submitted") {
           clearInterval(poll);
           window.location.reload();
@@ -482,6 +496,7 @@ function AttemptView({
         attempt.id,
         questions.map((q) => ({
           questionId: q.id,
+          questionText: q.prompt,
           selected: selected[q.id] ?? [],
           text: typed[q.id] ?? "",
         })),
@@ -932,7 +947,7 @@ function AdminQuizView({
                 {(quiz as any).totalQuestions} questions · {(quiz as any).durationMinutes} min ·{" "}
                 {(quiz as any).maxScore} points
                 {(quiz as any).dueAt &&
-                  ` · due ${format(new Date((quiz as any).dueAt), "MMM d, h:mm a")}`}
+                  ` · due ${fmtDate((quiz as any).dueAt, "MMM d, h:mm a")}`}
               </p>
             </div>
             <div className="flex items-center gap-2">

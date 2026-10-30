@@ -91,7 +91,11 @@ export function useQuizProctor(
     const sync = () => {
       const fs = Boolean(document.fullscreenElement);
       if (fs) enteredRef.current = true;
-      setIsFullscreen(fs);
+      // Never block the attempt when the browser did not allow fullscreen in
+      // the first place. Only treat it as "left fullscreen" when the student
+      // actually was in fullscreen before — otherwise the guard overlay could
+      // cover the whole quiz and make it impossible to answer.
+      setIsFullscreen(fs || !enteredRef.current);
       if (!fs && active && enteredRef.current) record("fullscreen_exit");
     };
     sync();
