@@ -14,6 +14,7 @@ import {
   XCircle,
   Timer,
   GraduationCap,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -518,6 +519,15 @@ function AdminAssignmentView({
             ) : (
               <Badge variant="outline" className="rounded-full">
                 Draft
+              </Badge>
+            )}
+            {assignment.assignedStudentIds && assignment.assignedStudentIds.length > 0 ? (
+              <Badge variant="secondary" className="rounded-full text-xs font-normal">
+                <Users className="size-3 mr-1" /> {assignment.assignedStudentIds.length} student{assignment.assignedStudentIds.length === 1 ? "" : "s"} assigned
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="rounded-full text-xs font-normal">
+                <Users className="size-3 mr-1" /> All enrolled students
               </Badge>
             )}
           </div>

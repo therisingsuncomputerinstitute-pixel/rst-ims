@@ -29,12 +29,14 @@ export default function EditQuizPage() {
   const router = useRouter();
 
   const [form, setForm] = useState<QuizFormState | null>(null);
+  const [courseId, setCourseId] = useState<string>("");
   const [questions, setQuestions] = useState<QuestionDraft[] | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     getQuiz(params.quizId)
       .then((q: any) => {
+        setCourseId(q.courseId);
         setForm({
           title: q.title,
           description: q.description || "",
@@ -42,6 +44,7 @@ export default function EditQuizPage() {
           durationMinutes: q.durationMinutes,
           dueAt: toInputDate(q.dueAt),
           accessKey: q.accessKey || "",
+          assignedStudentIds: q.assignedStudentIds ?? null,
         });
         setQuestions(
           (q.questions as any[]).map((qq) => ({
@@ -87,6 +90,7 @@ export default function EditQuizPage() {
         durationMinutes: form.durationMinutes,
         dueAt: form.dueAt || null,
         accessKey: form.accessKey,
+        assignedStudentIds: form.assignedStudentIds,
         questions: normalizeQuestions(valid),
       });
       toast.success("Quiz updated");
@@ -118,6 +122,7 @@ export default function EditQuizPage() {
         icon={<ClipboardList className="size-7 text-primary" />}
       />
       <QuizEditor
+        courseId={courseId}
         form={form}
         setForm={setForm}
         questions={questions}

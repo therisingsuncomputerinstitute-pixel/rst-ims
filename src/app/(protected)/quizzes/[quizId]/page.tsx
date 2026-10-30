@@ -24,6 +24,7 @@ import {
   MousePointerClick,
   VideoOff,
   KeyRound,
+  Copy,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -922,6 +923,41 @@ function AdminQuizView({
                 onConfirm={remove}
               />
             </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-outline-variant/40 flex flex-wrap items-center gap-2">
+            {(quiz as any).accessKey ? (
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-xs">
+                <KeyRound className="size-3.5 text-primary" />
+                <span className="text-on-surface-variant font-medium">Access Key:</span>
+                <span className="font-mono font-bold text-primary">{(quiz as any).accessKey}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText((quiz as any).accessKey);
+                    toast.success("Access key copied to clipboard!");
+                  }}
+                  className="hover:text-primary transition-colors text-on-surface-variant ml-1"
+                  title="Copy access key"
+                >
+                  <Copy className="size-3" />
+                </button>
+              </div>
+            ) : (
+              <Badge variant="outline" className="rounded-full text-xs font-normal">
+                No access key required
+              </Badge>
+            )}
+
+            {(quiz as any).assignedStudentIds && (quiz as any).assignedStudentIds.length > 0 ? (
+              <Badge variant="secondary" className="rounded-full text-xs font-normal">
+                <Users className="size-3 mr-1" /> {(quiz as any).assignedStudentIds.length} student{(quiz as any).assignedStudentIds.length === 1 ? "" : "s"} assigned
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="rounded-full text-xs font-normal">
+                <Users className="size-3 mr-1" /> All enrolled students
+              </Badge>
+            )}
           </div>
         </CardContent>
       </Card>

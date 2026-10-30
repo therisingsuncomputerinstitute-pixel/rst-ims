@@ -28,11 +28,13 @@ import {
 } from "@/components/ums/assignment-files";
 import { format } from "date-fns";
 import { PageHeader } from "@/components/ums/page-header";
+import { StudentAssignSelector } from "@/components/ums/student-assign-selector";
 
 export default function EditAssignmentPage() {
   const params = useParams<{ assignmentId: string }>();
   const router = useRouter();
   const [form, setForm] = useState<any>(null);
+  const [courseId, setCourseId] = useState<string>("");
   const [attachments, setAttachments] = useState<AssignmentAttachment[]>([]);
   const [removed, setRemoved] = useState<string[]>([]);
   const [newFiles, setNewFiles] = useState<NewFileDraft[]>([]);
@@ -43,12 +45,14 @@ export default function EditAssignmentPage() {
     getAssignment(params.assignmentId)
       .then((d: any) => {
         const a = d.assignment;
+        setCourseId(a.courseId);
         setForm({
           title: a.title,
           description: a.description || "",
           instructions: a.instructions || "",
           maxScore: String(a.maxScore),
           dueAt: a.dueAt ? format(new Date(a.dueAt), "yyyy-MM-dd'T'HH:mm") : "",
+          assignedStudentIds: a.assignedStudentIds ?? null,
         });
         setAttachments((a.attachments ?? []) as AssignmentAttachment[]);
       })
@@ -74,6 +78,7 @@ export default function EditAssignmentPage() {
         instructions: form.instructions,
         maxScore,
         dueAt: form.dueAt || null,
+        assignedStudentIds: form.assignedStudentIds,
       });
       for (const id of removed) {
         await removeAssignmentAttachment(id);
@@ -174,6 +179,14 @@ export default function EditAssignmentPage() {
                 className="mt-1.5 min-h-20"
               />
             </div>
+            {courseId && (
+              <StudentAssignSelector
+                courseId={courseId}
+                value={form.assignedStudentIds}
+                onChange={(ids) => setForm((f: any) => ({ ...f, assignedStudentIds: ids }))}
+                label="Assign to Students"
+              />
+            )}
             <div>
               <Label>Attached files or links</Label>
               {attachments.length > 0 && (

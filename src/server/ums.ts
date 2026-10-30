@@ -341,6 +341,20 @@ export async function updateCourse(
   return updated;
 }
 
+function isAssignedToStudent(
+  assignedStudentIds: unknown,
+  studentId: string,
+): boolean {
+  if (
+    !assignedStudentIds ||
+    !Array.isArray(assignedStudentIds) ||
+    assignedStudentIds.length === 0
+  ) {
+    return true;
+  }
+  return assignedStudentIds.includes(studentId);
+}
+
 export async function getCourse(courseId: string) {
   const u = await requireUser();
   const isAdmin = u.role === "admin";
@@ -392,7 +406,7 @@ export async function getCourse(courseId: string) {
       createdAt: course.createdAt,
     },
     quizzes: (course.quizzes as any[])
-      .filter((q) => isAdmin || q.isPublished)
+      .filter((q) => isAdmin || (q.isPublished && isAssignedToStudent(q.assignedStudentIds, u.id)))
       .map((q) => ({
         id: q.id,
         title: q.title,
@@ -402,10 +416,11 @@ export async function getCourse(courseId: string) {
         maxScore: q.maxScore,
         isPublished: q.isPublished,
         dueAt: q.dueAt,
+        assignedStudentIds: q.assignedStudentIds ?? null,
         createdAt: q.createdAt,
       })),
     assignments: (course.assignments as any[])
-      .filter((a) => isAdmin || a.isPublished)
+      .filter((a) => isAdmin || (a.isPublished && isAssignedToStudent(a.assignedStudentIds, u.id)))
       .map((a) => ({
         id: a.id,
         title: a.title,
@@ -413,6 +428,7 @@ export async function getCourse(courseId: string) {
         maxScore: a.maxScore,
         isPublished: a.isPublished,
         dueAt: a.dueAt,
+        assignedStudentIds: a.assignedStudentIds ?? null,
         createdAt: a.createdAt,
       })),
     resources: (course.resources as any[])
@@ -843,6 +859,7 @@ export async function createQuiz(input: {
   durationMinutes?: number;
   dueAt?: string | null;
   accessKey?: string;
+  assignedStudentIds?: string[] | null;
   questions: QuizQuestionInput[];
 }) {
   await requireAdmin();
@@ -867,6 +884,10 @@ export async function createQuiz(input: {
       durationMinutes: input.durationMinutes ?? 15,
       totalQuestions: input.questions.length,
       maxScore,
+      assignedStudentIds:
+        input.assignedStudentIds && input.assignedStudentIds.length > 0
+          ? input.assignedStudentIds
+          : null,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
     })
     .returning();
@@ -902,6 +923,9 @@ export async function getQuiz(quizId: string) {
 
   if (!isAdmin && !isEnrolled) throw new Error("You are not enrolled in this course.");
   if (!isAdmin && !quiz.isPublished) throw new Error("Quiz is not available yet.");
+  if (!isAdmin && !isAssignedToStudent(quiz.assignedStudentIds, u.id)) {
+    throw new Error("This quiz is not assigned to you.");
+  }
 
   // The access key is a secret between the admin and the students: tell the
   // student only whether one is required, never what it is.
@@ -1049,6 +1073,7 @@ export async function updateQuiz(
     dueAt: string | null;
     isPublished: boolean;
     accessKey?: string | null;
+    assignedStudentIds?: string[] | null;
     questions: QuizQuestionInput[];
   }>,
 ) {
@@ -1072,6 +1097,12 @@ export async function updateQuiz(
       durationMinutes: input.durationMinutes,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
       isPublished: input.isPublished,
+      assignedStudentIds:
+        input.assignedStudentIds !== undefined
+          ? input.assignedStudentIds && input.assignedStudentIds.length > 0
+            ? input.assignedStudentIds
+            : null
+          : undefined,
       totalQuestions: input.questions?.length,
       maxScore,
     })
@@ -1127,6 +1158,9 @@ export async function startQuizAttempt(quizId: string, accessKey?: string) {
         and(e(ce.courseId, quiz.courseId), e(ce.studentId, u.id)),
     });
     if (!enrolled) throw new Error("You are not enrolled in this course.");
+    if (!isAssignedToStudent(quiz.assignedStudentIds, u.id)) {
+      throw new Error("This quiz is not assigned to you.");
+    }
     if (quiz.dueAt && quiz.dueAt < new Date()) {
       throw new Error("This quiz is past its due date.");
     }
@@ -1456,6 +1490,7 @@ export async function createAssignment(input: {
   instructions?: string;
   maxScore: number;
   dueAt?: string | null;
+  assignedStudentIds?: string[] | null;
 }) {
   const { orgId } = await requireAdminOrg();
   await assertCourseInOrg(input.courseId, orgId);
@@ -1468,6 +1503,10 @@ export async function createAssignment(input: {
       description: input.description?.trim() || null,
       instructions: input.instructions?.trim() || null,
       maxScore: input.maxScore,
+      assignedStudentIds:
+        input.assignedStudentIds && input.assignedStudentIds.length > 0
+          ? input.assignedStudentIds
+          : null,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
     })
     .returning();
@@ -1483,6 +1522,7 @@ export async function updateAssignment(
     maxScore: number;
     dueAt: string | null;
     isPublished: boolean;
+    assignedStudentIds: string[] | null;
   }>,
 ) {
   const { orgId } = await requireAdminOrg();
@@ -1496,6 +1536,12 @@ export async function updateAssignment(
       maxScore: input.maxScore,
       dueAt: input.dueAt ? new Date(input.dueAt) : null,
       isPublished: input.isPublished,
+      assignedStudentIds:
+        input.assignedStudentIds !== undefined
+          ? input.assignedStudentIds && input.assignedStudentIds.length > 0
+            ? input.assignedStudentIds
+            : null
+          : undefined,
     })
     .where(and(eq(assignments.id, assignmentId), eq(assignments.organizationId, orgId)));
   return { success: true };
@@ -1569,6 +1615,9 @@ export async function getAssignment(assignmentId: string) {
     });
     if (!enrolled) throw new Error("You are not enrolled in this course.");
     if (!assignment.isPublished) throw new Error("Assignment not available yet.");
+    if (!isAssignedToStudent(assignment.assignedStudentIds, u.id)) {
+      throw new Error("This assignment is not assigned to you.");
+    }
     const mySubmission = await db.query.submissions.findFirst({
       where: (s, { eq: e }) =>
         and(
@@ -1638,6 +1687,9 @@ export async function submitAssignment(
   });
   if (!enrolled && u.role !== "admin") {
     throw new Error("You are not enrolled in this course.");
+  }
+  if (!isAssignedToStudent(assignment.assignedStudentIds, u.id) && u.role !== "admin") {
+    throw new Error("This assignment is not assigned to you.");
   }
 
   const file = formData.get("file") as File | null;
@@ -3195,7 +3247,11 @@ export async function listMyQuizzes(): Promise<MyQuizItem[]> {
     orderBy: (q, { desc: d }) => [d(q.createdAt)],
   });
 
-  return rows.map((r) => {
+  const visibleRows = isAdmin
+    ? rows
+    : rows.filter((r) => isAssignedToStudent((r as any).assignedStudentIds, u.id));
+
+  return visibleRows.map((r) => {
     const c = (r as any).course;
     const attempt = r.attempts[0];
     const status =
@@ -3281,7 +3337,11 @@ export async function listMyAssignments(): Promise<MyAssignmentItem[]> {
     orderBy: (a, { desc: d }) => [d(a.createdAt)],
   });
 
-  return rows.map((r) => {
+  const visibleRows = isAdmin
+    ? rows
+    : rows.filter((r) => isAssignedToStudent((r as any).assignedStudentIds, u.id));
+
+  return visibleRows.map((r) => {
     const sub = r.submissions[0];
     return {
       id: r.id,
@@ -3332,6 +3392,7 @@ export async function getUpcomingForCourse(courseId: string) {
         maxScore: quizzes.maxScore,
         isPublished: quizzes.isPublished,
         dueAt: quizzes.dueAt,
+        assignedStudentIds: quizzes.assignedStudentIds,
         createdAt: quizzes.createdAt,
         updatedAt: quizzes.updatedAt,
         requiresKey: sql<boolean>`(${quizzes.accessKey} is not null)`,
@@ -3374,7 +3435,14 @@ export async function getUpcomingForCourse(courseId: string) {
       )
       .orderBy(asc(assignments.dueAt)),
   ]);
-  return { quizzes: quizList, assignments: assignmentList };
+  const isAdmin = u.role === "admin";
+  const filteredQuizzes = isAdmin
+    ? quizList
+    : quizList.filter((q: any) => isAssignedToStudent(q.assignedStudentIds, u.id));
+  const filteredAssignments = isAdmin
+    ? assignmentList
+    : assignmentList.filter((a: any) => isAssignedToStudent(a.assignment?.assignedStudentIds, u.id));
+  return { quizzes: filteredQuizzes, assignments: filteredAssignments };
 }
 /* ------------------------------------------------------------------ *
  * Weighted gradebook (Agentic AI Architect quarters, out of 100)

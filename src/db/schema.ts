@@ -1256,6 +1256,7 @@ export const quizzes = pgTable(
     maxScore: real("max_score").notNull().default(0),
     isPublished: boolean("is_published").default(false).notNull(),
     dueAt: timestamp("due_at"),
+    assignedStudentIds: jsonb("assigned_student_ids"), // string[] of user.ids, null or [] means all enrolled students
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()
@@ -1344,6 +1345,7 @@ export const assignments = pgTable(
     filePath: text("file_path"),
     fileName: text("file_name"),
     fileSize: integer("file_size"),
+    assignedStudentIds: jsonb("assigned_student_ids"), // string[] of user.ids, null or [] means all enrolled students
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at")
       .defaultNow()

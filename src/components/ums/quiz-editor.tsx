@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { QuizQuestionInput, QuizQuestionType } from "@/server/ums";
+import { StudentAssignSelector } from "@/components/ums/student-assign-selector";
 
 export type QuizFormState = {
   title: string;
@@ -32,6 +33,7 @@ export type QuizFormState = {
   durationMinutes: number;
   dueAt: string;
   accessKey: string;
+  assignedStudentIds?: string[] | null;
 };
 
 export type QuestionDraft = {
@@ -80,6 +82,7 @@ function blankQuestion(): QuestionDraft {
 }
 
 export function QuizEditor({
+  courseId,
   form,
   setForm,
   questions,
@@ -88,6 +91,7 @@ export function QuizEditor({
   saving,
   saveLabel = "Save quiz",
 }: {
+  courseId?: string;
   form: QuizFormState;
   setForm: (f: QuizFormState) => void;
   questions: QuestionDraft[];
@@ -264,20 +268,42 @@ export function QuizEditor({
             />
           </div>
           <div>
-            <Label htmlFor="ql-key">Access key (optional)</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="ql-key">Access key</Label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-primary hover:text-primary"
+                onClick={() => {
+                  const num = Math.floor(1000 + Math.random() * 9000);
+                  setForm({ ...form, accessKey: `QUIZ-${num}` });
+                }}
+              >
+                Generate random key
+              </Button>
+            </div>
             <Input
               id="ql-key"
               value={form.accessKey}
               onChange={set("accessKey")}
-              placeholder="e.g. CIT-2026"
+              placeholder="e.g. QUIZ-2026"
               autoComplete="off"
               className="mt-1.5"
             />
             <p className="text-xs text-on-surface-variant mt-1.5">
-              Students must type this key to start the quiz. Leave empty for an
-              open quiz.
+              Students must type this access key to attend and start the quiz. Leave empty for an open quiz without key.
             </p>
           </div>
+
+          {courseId && (
+            <StudentAssignSelector
+              courseId={courseId}
+              value={form.assignedStudentIds}
+              onChange={(ids) => setForm({ ...form, assignedStudentIds: ids })}
+              label="Assign Quiz to Students"
+            />
+          )}
         </CardContent>
       </Card>
 

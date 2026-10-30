@@ -324,6 +324,7 @@ function OverviewTab({
                 href={isAdmin ? `/quizzes/${q.id}` : `/quizzes/${q.id}`}
                 published={q.isPublished}
                 isAdmin={isAdmin}
+                assignedStudentIds={q.assignedStudentIds}
                 type="quiz"
                 itemId={q.id}
                 busy={busy}
@@ -363,6 +364,7 @@ function OverviewTab({
                 href={`/assignments/${a.id}`}
                 published={a.isPublished}
                 isAdmin={isAdmin}
+                assignedStudentIds={a.assignedStudentIds}
                 type="assignment"
                 itemId={a.id}
                 busy={busy}
@@ -400,6 +402,7 @@ function ItemCard({
   isAdmin,
   type,
   itemId,
+  assignedStudentIds,
   busy,
   setBusy,
   load,
@@ -413,6 +416,7 @@ function ItemCard({
   isAdmin: boolean;
   type: "quiz" | "assignment";
   itemId: string;
+  assignedStudentIds?: string[] | null;
   busy: string | null;
   setBusy: (v: string | null) => void;
   load: () => void;
@@ -461,6 +465,22 @@ function ItemCard({
         </div>
       </Link>
       <div className="flex items-center gap-2 shrink-0">
+        {isAdmin && (
+          <Badge
+            variant="outline"
+            className={cn(
+              "rounded-full text-xs font-normal",
+              assignedStudentIds && assignedStudentIds.length > 0
+                ? "border-primary/40 text-primary bg-primary/5"
+                : "border-outline-variant/60 text-on-surface-variant",
+            )}
+          >
+            <Users className="size-3 mr-1" />
+            {assignedStudentIds && assignedStudentIds.length > 0
+              ? `${assignedStudentIds.length} assigned`
+              : "All students"}
+          </Badge>
+        )}
         <Badge
           variant="secondary"
           className={cn(

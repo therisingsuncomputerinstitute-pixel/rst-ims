@@ -17,6 +17,7 @@ import {
   PendingFilesEditor,
 } from "@/components/ums/assignment-files";
 import { PageHeader } from "@/components/ums/page-header";
+import { StudentAssignSelector } from "@/components/ums/student-assign-selector";
 
 export default function NewAssignmentPage() {
   const params = useParams<{ courseId: string }>();
@@ -24,6 +25,7 @@ export default function NewAssignmentPage() {
   const [saving, setSaving] = useState(false);
   const [files, setFiles] = useState<NewFileDraft[]>([]);
   const [links, setLinks] = useState<NewLinkDraft[]>([]);
+  const [assignedStudentIds, setAssignedStudentIds] = useState<string[] | null>(null);
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -51,6 +53,7 @@ export default function NewAssignmentPage() {
         instructions: form.instructions,
         maxScore,
         dueAt: form.dueAt || null,
+        assignedStudentIds,
       });
       for (const d of files) {
         const fd = new FormData();
@@ -141,6 +144,12 @@ export default function NewAssignmentPage() {
                 className="mt-1.5 min-h-20"
               />
             </div>
+            <StudentAssignSelector
+              courseId={params.courseId}
+              value={assignedStudentIds}
+              onChange={setAssignedStudentIds}
+              label="Assign to Students"
+            />
             <div>
               <Label>Attached files or links (instructions, references, etc. — optional)</Label>
               <div className="mt-1.5 rounded-2xl border border-outline-variant/50 p-4">

@@ -52,6 +52,7 @@ export default function NewQuizPage() {
         durationMinutes: form.durationMinutes,
         dueAt: form.dueAt || null,
         accessKey: form.accessKey,
+        assignedStudentIds: form.assignedStudentIds,
         questions: normalizeQuestions(valid),
       });
       toast.success("Quiz created");
@@ -73,6 +74,7 @@ export default function NewQuizPage() {
         icon={<ClipboardList className="size-7 text-primary" />}
       />
       <QuizEditor
+        courseId={params.courseId}
         form={form}
         setForm={setForm}
         questions={questions}
